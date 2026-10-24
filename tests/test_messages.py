@@ -495,6 +495,105 @@ def test_find_contact_returns_messages_ready_phone_number(mock_contacts):
     assert matches[0]["phone"] == "+19565179045"
 
 
+_WHITE_CONTACTS = {
+    "+18435406006": "Emma White",
+    "+13017874596": "Jeremy White",
+    "+18472546509": "Alex Whitaker",
+}
+
+_HUNT_CONTACTS = {
+    "+15038638650": "Andrew Hunt",
+    "andrew@hunt.codes": "Andrew Hunt",
+    "andrew.hunt@airbnb.com": "Andrew Hunt",
+    "+15038108387": "Dave Hunt",
+}
+
+
+@patch("mac_messages_mcp.messages.get_cached_contacts")
+def test_find_contact_exact_name_outranks_lookalikes(mock_contacts):
+    """An exact full-name hit is not ambiguous against names that merely resemble it."""
+    mock_contacts.return_value = _WHITE_CONTACTS
+    with patch.dict("mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP", {}, clear=True):
+        matches = find_contact_by_name("emma  white")
+
+    assert [m["phone"] for m in matches] == ["+18435406006"]
+
+
+@patch("mac_messages_mcp.messages.get_cached_contacts")
+def test_find_contact_partial_name_keeps_fuzzy_list(mock_contacts):
+    """A partial query has no exact hit and still returns every candidate."""
+    mock_contacts.return_value = _WHITE_CONTACTS
+    with patch.dict("mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP", {}, clear=True):
+        matches = find_contact_by_name("White")
+
+    assert len(matches) >= 2
+
+
+@patch("mac_messages_mcp.messages.get_cached_contacts")
+def test_find_contact_exact_name_keeps_all_handles_of_that_person(mock_contacts):
+    mock_contacts.return_value = _HUNT_CONTACTS
+    with patch.dict("mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP", {}, clear=True):
+        matches = find_contact_by_name("Andrew Hunt")
+
+    assert {m["phone"] for m in matches} == {
+        "+15038638650",
+        "andrew@hunt.codes",
+        "andrew.hunt@airbnb.com",
+    }
+
+
+@patch("mac_messages_mcp.messages._send_message_to_recipient", return_value="sent")
+@patch("mac_messages_mcp.messages.get_cached_contacts")
+def test_send_to_one_person_with_several_handles_uses_phone(mock_contacts, mock_send):
+    """Phone + email handles of one contact are not a disambiguation question."""
+    mock_contacts.return_value = _HUNT_CONTACTS
+    with (
+        patch.dict("mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP", {}, clear=True),
+        region_pinned("US"),
+    ):
+        result = send_message("Andrew Hunt", "hello")
+
+    assert result == "sent"
+    assert mock_send.call_args.args[0] == "+15038638650"
+
+
+@patch("mac_messages_mcp.messages.query_messages_db", return_value=[])
+@patch("mac_messages_mcp.messages.find_handles_by_phone", return_value=[11])
+@patch("mac_messages_mcp.messages.get_cached_contacts")
+def test_read_one_person_with_several_handles_unions_them(
+    mock_contacts,
+    mock_phone_handles,
+    mock_query,
+):
+    from mac_messages_mcp.messages import _resolve_message_scope
+
+    mock_contacts.return_value = _HUNT_CONTACTS
+    # Each email handle resolves to its own ROWID; the phone to 11.
+    mock_query.side_effect = [[{"ROWID": 22}], [{"ROWID": 33}]]
+    with patch.dict("mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP", {}, clear=True):
+        handle_ids, chat_row_id, _, _, error = _resolve_message_scope(
+            "Andrew Hunt",
+            None,
+        )
+
+    assert error is None
+    assert chat_row_id is None
+    assert sorted(handle_ids) == [11, 22, 33]
+
+
+@patch("mac_messages_mcp.messages.get_cached_contacts")
+def test_read_two_different_people_still_prompts(mock_contacts):
+    from mac_messages_mcp.messages import _resolve_message_scope
+
+    mock_contacts.return_value = _WHITE_CONTACTS
+    with patch.dict("mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP", {}, clear=True):
+        handle_ids, _, _, _, error = _resolve_message_scope("White", None)
+
+    assert handle_ids is None
+    assert error is not None
+    assert "Multiple contacts found" in error
+
+
 # Tests for temp file race condition fix in _send_message_to_recipient
 
 

@@ -820,7 +820,40 @@ def find_contact_by_name(name: str) -> list[dict[str, Any]]:
             }
 
     # Convert to sorted list
-    return sorted(seen_phones.values(), key=operator.itemgetter("score"), reverse=True)
+    ranked = sorted(
+        seen_phones.values(), key=operator.itemgetter("score"), reverse=True
+    )
+
+    # An exact name or nickname hit means the caller named one person. Keep
+    # only those entries so "Emma White" is not reported as ambiguous against
+    # "Jeremy White" and "Alex Whitaker", which merely resemble it. Partial
+    # queries ("Andrew") have no exact hit and keep the full fuzzy list.
+    exact = [m for m in ranked if _same_name(m["matched_on"], name)]
+    return exact or ranked
+
+
+def _same_name(a: str, b: str) -> bool:
+    """Case- and whitespace-insensitive name equality."""
+    return " ".join(str(a).split()).casefold() == " ".join(str(b).split()).casefold()
+
+
+def _single_person(matches: list[dict[str, Any]]) -> bool:
+    """True when every match is a different handle of the same contact.
+
+    One person usually has several handles (a phone number plus one or more
+    iMessage email addresses); those are not a disambiguation question.
+    """
+    return len(matches) > 1 and all(
+        _same_name(m["name"], matches[0]["name"]) for m in matches
+    )
+
+
+def _preferred_handle(matches: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pick the handle to send to: the phone number when there is one."""
+    for m in matches:
+        if "@" not in str(m["phone"]):
+            return m
+    return matches[0]
 
 
 # Shared disambiguation store for `contact:N` selectors.
@@ -957,9 +990,9 @@ def send_message(
     if not contacts:
         return f"Error: Could not find any contact matching '{recipient}'"
 
-    if len(contacts) == 1:
-        # Single match, use it
-        contact = contacts[0]
+    if len(contacts) == 1 or _single_person(contacts):
+        # One person: use their phone number over an email handle.
+        contact = _preferred_handle(contacts)
         return _send_message_to_recipient(
             contact["phone"],
             message,
@@ -1486,6 +1519,24 @@ def _check_selection_index(index: int) -> str | None:
     return None
 
 
+def _handles_for_address(address: str) -> list[int]:
+    """Return every handle ROWID for one phone number or email address.
+
+    An email is matched case-insensitively (handle.id compares case-sensitively
+    and the canonical form is lowercased). A phone number is tried in its
+    various stored formats and returns all handles across protocols.
+    """
+    if "@" in address:
+        results = query_messages_db(
+            "SELECT ROWID FROM handle WHERE id = ? COLLATE NOCASE",
+            (canonical_handle(address) or address.strip(),),
+        )
+        if results and "error" not in results[0]:
+            return [row["ROWID"] for row in results]
+        return []
+    return find_handles_by_phone(address) or []
+
+
 def _resolve_message_scope(
     contact: str | None,
     chat_id: str | None,
@@ -1655,6 +1706,14 @@ def _resolve_message_scope(
             elif len(matches) == 1:
                 # Single match, use its phone number
                 contact = str(matches[0]["phone"])
+            elif _single_person(matches):
+                # One person, several handles (phone + iMessage emails): read
+                # across all of them rather than asking which to pick.
+                handle_ids = []
+                for m in matches:
+                    handle_ids.extend(_handles_for_address(str(m["phone"])))
+                handle_ids = list(dict.fromkeys(handle_ids))
+                contact = str(_preferred_handle(matches)["phone"])
             else:
                 # Store the matches for later selection (shared contact:N store)
                 set_recent_contact_matches(matches)
@@ -1679,22 +1738,11 @@ def _resolve_message_scope(
                 )
 
         # At this point, contact should be a phone number or email, unless the
-        # chat display-name fallback above already resolved it (chat_row_id set).
+        # chat display-name fallback above already resolved it (chat_row_id set)
+        # or a single-person match already collected every handle.
         if chat_row_id is None:
-            if "@" in contact:
-                # This is an email. Fold the case on both sides: handle.id compares
-                # case-sensitively, and the canonical form is lowercased.
-                query = "SELECT ROWID FROM handle WHERE id = ? COLLATE NOCASE"
-                results = query_messages_db(
-                    query,
-                    (canonical_handle(contact) or contact.strip(),),
-                )
-                if results and "error" not in results[0] and results:
-                    handle_ids = [row["ROWID"] for row in results]
-            else:
-                # This is a phone number - try various formats (returns all
-                # handles for multi-protocol)
-                handle_ids = find_handles_by_phone(contact)
+            if not handle_ids:
+                handle_ids = _handles_for_address(contact)
 
             if not handle_ids:
                 # Try a direct search in message table to see if any messages exist.

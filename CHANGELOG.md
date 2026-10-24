@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `draft_reply`.
 
 ### Changed
+- Contact name resolution prefers an exact name or nickname match, so a query
+  such as "Emma White" is no longer reported as ambiguous against look-alike
+  names ("Jeremy White", "Alex Whitaker"). When the only remaining matches are
+  one person's several handles (a phone number plus iMessage email addresses),
+  reads and searches cover all of those handles and sends go to the phone
+  number, instead of asking which handle to pick. Partial queries still return
+  the full fuzzy list.
 - Attachment paths are validated and resolved before any part of a message is
   sent, so a bad path cannot leave a partial send behind.
 - Messages.app automation exposes no API for sending tapbacks, message effects,
