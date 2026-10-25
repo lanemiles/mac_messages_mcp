@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shortened by dropping whole trailing list items — `page.has_more` is set and a
   `truncated` object records `items_dropped` — instead of being cut mid-string
   into invalid JSON.
+- **The test suite no longer sends real text messages.**
+  `tests/test_integration.py::test_sms_fallback_functionality` (since v0.7.0)
+  called `_send_message_sms("+15551234567", "test message")` with nothing
+  mocked, so on a Mac with Messages signed in and text forwarding enabled,
+  every `pytest` run sent an SMS to +1 555-123-4567. The test now patches
+  `run_applescript` and checks the script and outcome, and an autouse fixture
+  in `tests/conftest.py` fails any test that reaches the real `run_applescript`.
 
 ### Added
 - Added an agent skill (`.claude/skills/mac-messages/SKILL.md`) that documents when and how to call each MCP tool, plus a README section on installing it for another project or agent.

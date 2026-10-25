@@ -5,6 +5,7 @@ Tests all MCP tools to ensure they don't crash and handle edge cases properly.
 """
 
 import os
+from unittest.mock import patch
 
 from mac_messages_mcp.messages import (
     check_addressbook_access,
@@ -92,18 +93,36 @@ def test_time_ranges():
         assert "NameError" not in result
 
 
-def test_sms_fallback_functionality():
-    """Test SMS/RCS fallback functions don't crash with import errors."""
-    # Test iMessage availability check
-    result = _check_imessage_availability("+15551234567")
-    assert isinstance(
-        result,
-        bool,
-    ), "iMessage availability check should return boolean"
+def test_sms_fallback_functionality(chat_db):
+    """The SMS/RCS fallback builds a Messages script and reports its result.
 
-    # Test SMS sending function
-    result = _send_message_sms("+15551234567", "test message")
-    assert isinstance(result, str), "SMS send should return string result"
+    This test used to call ``_send_message_sms`` unmocked and only check that
+    a string came back. On a Mac with Messages signed in and text forwarding
+    on, that sent a real SMS to +1 555-123-4567 on every run of the suite.
+    ``conftest._tripwire_against_real_sends`` now fails any test that reaches
+    the real ``run_applescript``; this one patches it like every other send
+    test, and checks what the script and the outcome actually say.
+    """
+    # A number with no iMessage history in chat.db is not iMessage-reachable.
+    assert _check_imessage_availability("+15551234567") is False
+
+    with (
+        patch("mac_messages_mcp.applescript.run_applescript") as run,
+        patch("mac_messages_mcp.send._verify_send_in_db", return_value=None),
+    ):
+        run.return_value = "success"
+        result = _send_message_sms("+15551234567", "test message")
+    script = run.call_args[0][0]
+    assert "service type = SMS" in script
+    assert "+15551234567" in script and "test message" in script
+    assert "handed to Messages.app via SMS" in result, result
+
+    with patch(
+        "mac_messages_mcp.applescript.run_applescript",
+        return_value="error:No SMS account",
+    ):
+        failed = _send_message_sms("+15551234567", "test message")
+    assert failed == "Error sending SMS: No SMS account"
 
 
 def test_applescript_escape_order():

@@ -12,7 +12,7 @@ from datetime import timezone
 
 import pytest
 
-from mac_messages_mcp import contacts, db, messages, session
+from mac_messages_mcp import applescript, contacts, db, messages, session
 
 from .chatdb import AddressBookDb, ChatDb
 
@@ -47,6 +47,29 @@ def _reset_process_caches(monkeypatch, tmp_path_factory):
         monkeypatch.delenv(var, raising=False)
     yield
     session.Session().reset()
+
+
+def _no_real_osascript(script: str, *args: object, **kwargs: object) -> str:
+    raise AssertionError(
+        "This test reached the real run_applescript. On a Mac with Messages "
+        "signed in that sends a real message (it did: six SMS to +1 555-123-4567 "
+        "on 2026-10-24). Patch mac_messages_mcp.applescript.run_applescript in "
+        "the test.\n--- script ---\n" + script[:400]
+    )
+
+
+@pytest.fixture(autouse=True)
+def _tripwire_against_real_sends(monkeypatch):
+    """Nothing in the suite may run osascript for real.
+
+    Every send, schedule and contact write ends in ``applescript.run_applescript``
+    (callers reach it through the module attribute). Tests that exercise those
+    paths patch it themselves; a test that forgets would otherwise send a real
+    iMessage/SMS from whatever Mac runs the suite. ``run_applescript``'s own
+    tests hold a direct reference to the function and mock ``subprocess``, so
+    they are unaffected.
+    """
+    monkeypatch.setattr(applescript, "run_applescript", _no_real_osascript)
 
 
 @pytest.fixture(scope="session")
