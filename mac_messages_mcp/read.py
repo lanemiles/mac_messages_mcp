@@ -1017,11 +1017,11 @@ def get_recent_messages(
         where_clauses = []
         params = []
     else:
-        # Calculate the timestamp for X hours ago.
-        # String-bind the Apple-ns timestamp to avoid SQLite integer overflow.
+        # Calculate the timestamp for X hours ago. Integer-bound so SQLite seeks
+        # message_idx_date (see db.date_range_clauses).
         hours_ago = datetime.now(timezone.utc) - timedelta(hours=hours)
-        where_clauses = ["CAST(m.date AS TEXT) > ?"]
-        params = [str(_db.to_apple_ns(hours_ago))]
+        where_clauses = ["m.date > ?"]
+        params = [_db.to_apple_ns(hours_ago)]
 
     # Add contact filter if handle_ids were found (support multiple handles
     # for multi-protocol)
@@ -1044,9 +1044,11 @@ def get_recent_messages(
         where_clauses.append("m.ROWID > ?")
         params.append(since_rowid)
 
-    # A cursor read streams forward in time; the default read shows the newest
-    # messages first.
-    order = "ASC" if since_rowid is not None else "DESC"
+    # A cursor read streams forward by ROWID, which is what the cursor is and
+    # what the primary key seeks on; ordering it by date would walk the date
+    # index from the oldest row on every poll. The default read shows the
+    # newest messages first.
+    order_by = "m.ROWID ASC" if since_rowid is not None else "m.date DESC"
     where_sql = " AND ".join(where_clauses)
 
     # Build the SQL query - use attributedBody field and text. The metadata
@@ -1060,7 +1062,7 @@ def get_recent_messages(
         message m
     WHERE
         {where_sql}
-    ORDER BY m.date {order}
+    ORDER BY {order_by}
     LIMIT ? OFFSET ?
     """
     params.extend([limit, offset])
@@ -1386,9 +1388,8 @@ def fuzzy_search_messages(
         time_desc = "all time"
     else:
         hours_ago_dt = datetime.now(timezone.utc) - timedelta(hours=hours)
-        # String-bind the Apple-ns timestamp to avoid SQLite integer overflow.
-        time_clauses = ["CAST(m.date AS TEXT) > ?"]
-        time_params = [str(_db.to_apple_ns(hours_ago_dt))]
+        time_clauses = ["m.date > ?"]
+        time_params = [_db.to_apple_ns(hours_ago_dt)]
         time_desc = f"the last {hours} hours"
 
     # Ranking happens in Python, so fetch a multiple of the requested page and

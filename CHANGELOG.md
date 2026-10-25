@@ -93,6 +93,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `draft_reply`.
 
 ### Changed
+- `tool_list_conversations` no longer joins every message in the database. Last
+  activity and counts come from `chat_message_join.message_date` (indexed),
+  unread counts start from the small unread set, and the new "since last
+  opened" count range-scans each chat from `chat.last_read_message_timestamp`.
+  7.5x faster on a 20k-message fixture; the gap grows with history. It also
+  hides archived threads by default (`include_archived=true` lists them with
+  `[archived]`), tags Unknown Senders threads `[unknown sender]`, and reports
+  how many inbound messages arrived since you last opened each thread, which is
+  a steadier triage signal than Apple's per-message read flag. JSON output
+  carries `archived`, `filtered`, `unseen_since_last_opened`, `last_opened_at`.
 - Reads reuse one read-only SQLite connection per thread instead of opening a
   new one for every query, and resolve every sender on a page with one batched
   handle lookup (plus one chat-name fallback query) instead of one or two
@@ -129,6 +139,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than faking them.
 
 ### Fixed
+- Date filters bind Apple-epoch timestamps as integers. They were bound as
+  strings and compared with `CAST(m.date AS TEXT)`, which is lexicographic: a
+  pre-2017 row storing seconds (nine digits) could sort above a nanosecond
+  bound and appear in "the last 24 hours" (reproduced on the real schema in
+  `tests/test_query_plans.py`). The integer comparison also lets SQLite seek
+  `message_idx_date` instead of scanning it, which matters for date ranges in
+  the past. The "overflow" rationale for the string bind was mistaken:
+  Apple-ns values fit 64-bit integers with room to spare.
+- `since_rowid` cursor reads order by `ROWID` instead of `date`. Filtering on
+  `ROWID > ?` while ordering by `date` walked the date index from the oldest
+  message on every poll; the primary-key seek is constant time. A cursor read
+  is defined by ROWID order, so results are unchanged except when two rows
+  disagree on date order.
 - Message lines now show the message ROWID as `#N` after the timestamp, and a
   `since_rowid` read ends with a cursor note naming the highest ROWID seen.
   Previously no tool output ever exposed a ROWID, so the cursor that

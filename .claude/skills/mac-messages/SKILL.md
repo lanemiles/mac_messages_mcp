@@ -106,10 +106,10 @@ never send anything.
 - Each result line carries a `Score:`; prefer higher-scoring matches when the
   search term is short.
 
-`tool_list_conversations(limit=50, unread_only=False)` lists every conversation
+`tool_list_conversations(limit=50, unread_only=False, format="text", include_archived=False)` lists every conversation
 with its kind (direct, group, business), message count, unread count, and last
 activity. Use it to find a thread ID or to triage unread work; use
-`tool_get_chats` when you only need send-ready group chat IDs.
+`tool_get_chats` when you only need send-ready group chat IDs. Archived threads are hidden unless `include_archived=True` (then tagged `[archived]`); threads Messages filed under Unknown Senders are tagged `[unknown sender]`; when Messages knows when the user last opened a thread, the line also says how many inbound messages arrived "since last opened", which is a steadier triage signal than the per-message unread flag.
 
 `tool_get_chat_participants(chat_id, format="text")` lists a chat's members
 with names and numbers; use it to learn who is in an unnamed group before

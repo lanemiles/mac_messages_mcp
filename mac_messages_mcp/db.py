@@ -142,18 +142,23 @@ def isoformat_local(moment: datetime) -> str:
 def date_range_clauses(
     start_date: str | None,
     end_date: str | None,
-) -> tuple[list[str], list[str], str | None]:
+) -> tuple[list[str], list[int], str | None]:
     """Build Apple-ns date-range SQL clauses for a message query.
 
     Returns ``(clauses, params, error)``. Both bounds are inclusive days in the
     Mac's local timezone, written "YYYY-MM-DD", so they agree with the local
     timestamps the output shows; the end bound is exclusive at the following
     local midnight.
-    Timestamps are string-bound so a seconds-format row cannot overflow SQLite's
-    integer comparison.
+
+    Timestamps are bound as integers. Apple-epoch nanoseconds (~8e17) fit
+    SQLite's 64-bit integers with room to spare, and an integer comparison
+    lets SQLite seek ``message_idx_date`` instead of scanning it. The previous
+    ``CAST(m.date AS TEXT)`` comparison was lexicographic, so a pre-2017 row
+    storing seconds (nine digits) could sort above a nanosecond bound and leak
+    into a recent window.
     """
     clauses: list[str] = []
-    params: list[str] = []
+    params: list[int] = []
     if start_date:
         parsed = _parse_iso_date(start_date)
         if parsed is None:
@@ -162,8 +167,8 @@ def date_range_clauses(
                 [],
                 f"Error: start_date must be YYYY-MM-DD, got '{start_date}'.",
             )
-        clauses.append("CAST(m.date AS TEXT) >= ?")
-        params.append(str(to_apple_ns(parsed)))
+        clauses.append("m.date >= ?")
+        params.append(to_apple_ns(parsed))
     if end_date:
         parsed = _parse_iso_date(end_date)
         if parsed is None:
@@ -172,8 +177,8 @@ def date_range_clauses(
                 [],
                 f"Error: end_date must be YYYY-MM-DD, got '{end_date}'.",
             )
-        clauses.append("CAST(m.date AS TEXT) < ?")
-        params.append(str(to_apple_ns(parsed + timedelta(days=1))))
+        clauses.append("m.date < ?")
+        params.append(to_apple_ns(parsed + timedelta(days=1)))
     return clauses, params, None
 
 

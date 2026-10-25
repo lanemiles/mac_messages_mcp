@@ -117,8 +117,12 @@ def test_list_conversations_json(chat_db):
         "chat_id": "chat1",
         "name": "Family",
         "kind": "group",
+        "archived": False,
+        "filtered": False,
         "message_count": 1,
         "unread_count": 1,
+        "unseen_since_last_opened": None,
+        "last_opened_at": None,
         "last_message_at": data["conversations"][0]["last_message_at"],
     }
     datetime.fromisoformat(data["conversations"][0]["last_message_at"])

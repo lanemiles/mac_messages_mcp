@@ -198,11 +198,12 @@ def test_date_range_replaces_the_hours_window():
             get_recent_messages(start_date="2026-01-01", end_date="2026-01-31")
     sql = mock_query.call_args[0][0]
     params = mock_query.call_args[0][1]
-    assert "CAST(m.date AS TEXT) >= ?" in sql
-    assert "CAST(m.date AS TEXT) < ?" in sql
-    assert "CAST(m.date AS TEXT) > ?" not in sql
+    assert "m.date >= ?" in sql
+    assert "m.date < ?" in sql
+    assert "m.date > ?" not in sql
+    assert "CAST(" not in sql
     start_ns = _to_apple_ns(datetime(2026, 1, 1, tzinfo=timezone.utc))
-    assert params[0] == str(start_ns)
+    assert params[0] == start_ns
 
 
 def test_invalid_dates_are_rejected():
@@ -226,8 +227,8 @@ def test_cursor_read_ignores_the_hours_window_and_orders_ascending():
     sql = mock_query.call_args[0][0]
     params = mock_query.call_args[0][1]
     assert "m.ROWID > ?" in sql
-    assert "ORDER BY m.date ASC" in sql
-    assert "CAST(m.date AS TEXT) >" not in sql
+    assert "ORDER BY m.ROWID ASC" in sql
+    assert "m.date >" not in sql
     assert 42 in params
     assert "No new messages since ROWID 42." in result
 

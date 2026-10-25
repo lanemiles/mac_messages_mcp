@@ -344,7 +344,9 @@ def test_list_conversations_tool_delegates():
         result = tool_list_conversations(limit=5, unread_only=True)
 
     assert "CONVERSATIONS" in result
-    delegate.assert_called_once_with(limit=5, unread_only=True, format="text")
+    delegate.assert_called_once_with(
+        limit=5, unread_only=True, format="text", include_archived=False
+    )
 
 
 def test_wait_tool_delegates():

@@ -139,7 +139,7 @@ def test_seconds_format_row_renders_expected_year(mock_query, *_):
 @patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
 @patch("mac_messages_mcp.db.query_messages_db")
 def test_window_param_is_apple_ns_within_tolerance(mock_query, *_):
-    """The first param should be an Apple-ns string for roughly (now - hours)."""
+    """The first param should be an Apple-ns integer for roughly (now - hours)."""
     mock_query.return_value = []
     before = datetime.now(timezone.utc)
     fuzzy_search_messages(search_term="x", hours=24, threshold=0.5)
@@ -148,9 +148,10 @@ def test_window_param_is_apple_ns_within_tolerance(mock_query, *_):
     # First call's first positional arg = sql, second = params tuple
     params = mock_query.call_args[0][1]
     # Time-window cutoff is the first param (insert(0, ...) in source)
-    cutoff_str = params[0]
-    assert isinstance(cutoff_str, str)
-    cutoff_ns = int(cutoff_str)
+    cutoff_ns = params[0]
+    # Bound as an integer so SQLite can seek message_idx_date; a string bind
+    # compared lexicographically and forced an index scan.
+    assert isinstance(cutoff_ns, int)
 
     expected_low = _to_apple_ns(before - timedelta(hours=24))
     expected_high = _to_apple_ns(after - timedelta(hours=24))

@@ -292,33 +292,63 @@ def _conversation_kind(style: Any, chat_identifier: Any = None) -> str:
         return "direct"
 
 
-@bound_untrusted_output
-def list_conversations(
-    limit: int = 50, unread_only: bool = False, format: str = "text"
-) -> str:
-    """List every conversation, most recent activity first.
+# Per-chat activity comes from chat_message_join.message_date, which Apple
+# maintains and indexes, so the message table is never touched for counts or
+# last activity. Unread and unseen counts start from the small set of rows that
+# qualify (the unread index; rows newer than the chat's last-read marker) rather
+# than from every message. The previous shape joined chat -> join -> message for
+# the whole table on every call. In the unseen CTE, CROSS JOIN pins the loop
+# order: per chat, range-scan the (chat_id, message_date) index from the
+# last-read marker, then look up only those few messages; left to itself the
+# planner scanned the whole join table.
+_CONVERSATIONS_QUERY = """
+    WITH activity AS (
+        SELECT chat_id,
+               COUNT(*) AS message_count,
+               MAX(message_date) AS last_message_date
+        FROM chat_message_join
+        GROUP BY chat_id
+    ),
+    unread AS (
+        SELECT cmj.chat_id, COUNT(*) AS unread_count
+        FROM message m
+        JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+        WHERE m.is_read = 0 AND m.is_from_me = 0
+        GROUP BY cmj.chat_id
+    ),
+    unseen AS (
+        SELECT cmj.chat_id, COUNT(*) AS unseen_count
+        FROM chat c
+        CROSS JOIN chat_message_join cmj
+          ON cmj.chat_id = c.ROWID
+         AND cmj.message_date > c.last_read_message_timestamp
+        CROSS JOIN message m ON m.ROWID = cmj.message_id
+        WHERE c.last_read_message_timestamp > 0 AND m.is_from_me = 0
+        GROUP BY cmj.chat_id
+    )
+    SELECT
+        c.ROWID AS chat_row_id,
+        c.chat_identifier AS chat_identifier,
+        c.display_name AS display_name,
+        c.style AS style,
+        c.is_archived AS is_archived,
+        c.is_filtered AS is_filtered,
+        c.last_read_message_timestamp AS last_read_message_timestamp,
+        COALESCE(a.message_count, 0) AS message_count,
+        COALESCE(u.unread_count, 0) AS unread_count,
+        COALESCE(s.unseen_count, 0) AS unseen_count,
+        a.last_message_date AS last_message_date
+    FROM chat c
+    LEFT JOIN activity a ON a.chat_id = c.ROWID
+    LEFT JOIN unread u ON u.chat_id = c.ROWID
+    LEFT JOIN unseen s ON s.chat_id = c.ROWID
+    WHERE (? OR COALESCE(c.is_archived, 0) = 0)
+    ORDER BY a.last_message_date IS NULL, a.last_message_date DESC
+    LIMIT ?
+"""
 
-    Unlike ``get_chat_mapping`` (named group chats only), this covers 1:1,
-    business, and group threads, with message and unread counts, so a client can
-    discover a conversation and then page it with ``get_recent_messages`` or
-    ``fuzzy_search_messages``.
-
-    Args:
-        limit: Maximum number of conversations to return (default 50).
-        unread_only: Return only conversations with at least one unread message.
-        format: ``"text"`` or ``"json"`` (``{"conversations": [...]}``).
-
-    """
-    format_error = _output._check_format(format)
-    if format_error is not None:
-        return format_error
-    if limit <= 0:
-        return "Error: limit must be positive."
-    if limit > _MAX_MESSAGE_LIMIT:
-        return f"Error: limit must be at most {_MAX_MESSAGE_LIMIT}."
-    as_json = format == "json"
-
-    query = """
+# For a chat.db predating is_archived / is_filtered / last_read_message_timestamp.
+_CONVERSATIONS_QUERY_LEGACY = """
     SELECT
         c.ROWID AS chat_row_id,
         c.chat_identifier AS chat_identifier,
@@ -334,8 +364,53 @@ def list_conversations(
     GROUP BY c.ROWID, c.chat_identifier, c.display_name, c.style
     ORDER BY last_message_date IS NULL, last_message_date DESC
     LIMIT ?
+"""
+
+
+def _conversation_rows(limit: int, include_archived: bool) -> list[dict[str, Any]]:
+    rows = _db.query_messages_db(
+        _CONVERSATIONS_QUERY, (1 if include_archived else 0, limit)
+    )
+    if rows and "error" in rows[0] and "no such column" in str(rows[0]["error"]):
+        rows = _db.query_messages_db(_CONVERSATIONS_QUERY_LEGACY, (limit,))
+    return rows
+
+
+@bound_untrusted_output
+def list_conversations(
+    limit: int = 50,
+    unread_only: bool = False,
+    format: str = "text",
+    include_archived: bool = False,
+) -> str:
+    """List every conversation, most recent activity first.
+
+    Unlike ``get_chat_mapping`` (named group chats only), this covers 1:1,
+    business, and group threads, with message and unread counts, so a client can
+    discover a conversation and then page it with ``get_recent_messages`` or
+    ``fuzzy_search_messages``. Archived threads are hidden unless asked for;
+    threads Messages filed under Unknown Senders are tagged ``[unknown sender]``.
+    When Messages has recorded when you last opened a thread, the count of
+    inbound messages newer than that is reported as "since last opened", which
+    is a steadier signal than the per-message read flag.
+
+    Args:
+        limit: Maximum number of conversations to return (default 50).
+        unread_only: Return only conversations with at least one unread message.
+        format: ``"text"`` or ``"json"`` (``{"conversations": [...]}``).
+        include_archived: Also list archived threads, tagged ``[archived]``.
+
     """
-    rows = _db.query_messages_db(query, (limit,))
+    format_error = _output._check_format(format)
+    if format_error is not None:
+        return format_error
+    if limit <= 0:
+        return "Error: limit must be positive."
+    if limit > _MAX_MESSAGE_LIMIT:
+        return f"Error: limit must be at most {_MAX_MESSAGE_LIMIT}."
+    as_json = format == "json"
+
+    rows = _conversation_rows(limit, include_archived)
     if not rows:
         return (
             _output._json_dumps({"conversations": []})
@@ -350,8 +425,14 @@ def list_conversations(
     lines: list[str] = []
     items: list[dict[str, Any]] = []
     for row in rows:
-        if unread_only and not row.get("unread_count"):
+        unread = int(row.get("unread_count") or 0)
+        unseen = int(row.get("unseen_count") or 0)
+        if unread_only and not (unread or unseen):
             continue
+        archived = bool(row.get("is_archived"))
+        filtered = bool(row.get("is_filtered"))
+        if archived and not include_archived:
+            continue  # legacy query cannot filter in SQL
         name = row.get("display_name") or row.get("chat_identifier") or "unknown"
         last = row.get("last_message_date")
         last_dt: datetime | None
@@ -361,21 +442,39 @@ def list_conversations(
         except (ValueError, TypeError, OverflowError):
             last_dt = None
             last_str = "unknown"
+        opened_dt: datetime | None = None
+        opened_raw = row.get("last_read_message_timestamp")
+        if opened_raw:
+            try:
+                opened_dt = _db.from_apple_ns(int(opened_raw))
+            except (ValueError, TypeError, OverflowError):
+                opened_dt = None
         kind = _conversation_kind(row.get("style"), row.get("chat_identifier"))
         identifier = neutralize_untrusted_text(str(row.get("chat_identifier") or ""))
+        flags = ""
+        if archived:
+            flags += " [archived]"
+        if filtered:
+            flags += " [unknown sender]"
+        counts = f"{row.get('message_count') or 0} message(s), {unread} unread"
+        if opened_dt is not None:
+            counts += f", {unseen} since last opened"
         lines.append(
-            f"{len(lines) + 1}. [{kind}] "
+            f"{len(lines) + 1}. [{kind}]{flags} "
             f"{neutralize_untrusted_text(str(name))} (chat ID: {identifier}) - "
-            f"{row.get('message_count') or 0} message(s), "
-            f"{row.get('unread_count') or 0} unread, last {last_str}",
+            f"{counts}, last {last_str}",
         )
         items.append(
             {
                 "chat_id": _output._json_text(row.get("chat_identifier")) or None,
                 "name": _output._json_text(name),
                 "kind": kind,
+                "archived": archived,
+                "filtered": filtered,
                 "message_count": int(row.get("message_count") or 0),
-                "unread_count": int(row.get("unread_count") or 0),
+                "unread_count": unread,
+                "unseen_since_last_opened": unseen if opened_dt is not None else None,
+                "last_opened_at": _db.isoformat_local(opened_dt) if opened_dt else None,
                 "last_message_at": _db.isoformat_local(last_dt) if last_dt else None,
             }
         )

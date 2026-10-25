@@ -853,19 +853,30 @@ def tool_list_conversations(
             ),
         ),
     ] = "text",
+    include_archived: Annotated[
+        bool,
+        Field(description="Also list archived threads, tagged [archived]."),
+    ] = False,
 ) -> str:
     """List every conversation, not just named group chats.
 
     This is read-only: it reports chat identifiers, kind (direct, group, or
-    business), message count, unread count, and last activity. Requires Full
-    Disk Access. Returned names and identifiers are structurally neutralized and
+    business), message count, unread count, how many inbound messages arrived
+    since you last opened the thread, and last activity. Archived threads are
+    hidden unless include_archived is true; Unknown Senders threads are tagged
+    [unknown sender]. Requires Full Disk Access. Returned names and identifiers are structurally neutralized and
     wrapped in <untrusted-mcp-output>. Use the returned chat ID with
     tool_get_recent_messages or tool_fuzzy_search_messages to read that thread;
     use tool_get_chats when you only need send-ready group chat IDs.
     """
     logger.info("Listing conversations: limit=%s unread_only=%s", limit, unread_only)
     try:
-        return list_conversations(limit=limit, unread_only=unread_only, format=format)
+        return list_conversations(
+            limit=limit,
+            unread_only=unread_only,
+            format=format,
+            include_archived=include_archived,
+        )
     except Exception as e:
         logger.exception("Error listing conversations")
         return f"Error listing conversations: {e!s}"
