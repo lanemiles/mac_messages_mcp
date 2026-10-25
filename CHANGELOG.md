@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Added an agent skill (`.claude/skills/mac-messages/SKILL.md`) that documents when and how to call each MCP tool, plus a README section on installing it for another project or agent.
+- Added schema-faithful test databases: `tests/fixtures/chat_schema.sql` and
+  `tests/fixtures/addressbook_schema.sql` are DDL dumped from a real Mac
+  (macOS 27), and `tests/chatdb.py` loads them into temporary SQLite files that
+  the code under test reads through its normal paths. `tests/test_real_schema.py`
+  runs every read path's SQL against them, so a misspelled column or wrong join
+  fails in CI rather than on a user's machine.
 - Added `mac-messages-cli`, a terminal interface for the local Messages and Contacts databases: `recent`, `search`, `contact`, `contacts`, `chats`, `attachments`, `attachment`, `send`, and `check`. It reads and writes the same data as the MCP server under the same macOS permissions. `send` prompts for confirmation and refuses to send from a non-terminal stdin unless `--yes` is passed.
 - Attachment metadata can be read without loading inline image bytes (`_describe_attachment`), which the CLI uses to print an attachment's path and optionally copy the file.
 
@@ -56,6 +62,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or subjects; creating or editing a group chat; editing, unsending, deleting,
   or marking a message read; or saving drafts. The server refuses those requests
   rather than faking them.
+
+### Fixed
+- Message lines now show the message ROWID as `#N` after the timestamp, and a
+  `since_rowid` read ends with a cursor note naming the highest ROWID seen.
+  Previously no tool output ever exposed a ROWID, so the cursor that
+  `since_rowid` and `tool_wait_for_new_messages` ask for could not be obtained
+  from the tools themselves.
+- A `since_rowid` read whose new rows all lack displayable text now reports the
+  advanced cursor instead of "No new messages", so a polling caller does not
+  re-read the same rows forever.
+- Attachment placeholders are handled the way Messages writes them. macOS puts
+  U+FFFC (object replacement character) into `attributedBody` where a file
+  sits and omits it from `text`; the server looked for U+FFFD instead, so an
+  attachment-only message rendered as a stray `￼` glyph rather than
+  `[attachment]`, a text-plus-photo message carried the glyph in its body, and
+  send verification could not match such a send's body and fell back to the
+  newest row, sometimes reporting another send's outcome. Verified against a
+  real macOS 27 blob, now kept (with its words substituted) in
+  `tests/fixtures/attributed_body_sample.hex`.
+- `tool_list_conversations` labelled every one-to-one thread `[business]`,
+  because it mapped `chat.style = 45` to business when 45 is the ordinary 1:1
+  style. One-to-one threads are now `[direct]`; `[business]` is reserved for
+  Messages for Business threads, recognised by their `urn:biz:` identifier.
+- `tool_wait_for_new_messages` probes for new rows inside its `contact` or
+  `chat_id` scope instead of the whole table. A message in another thread used
+  to wake the wait and return "No new messages since ROWID N" immediately, and
+  because the caller could not advance N, a polling loop spun without sleeping.
+  An unresolvable scope is now reported at once rather than after the timeout.
 
 ### Security
 - GitHub Actions workflows now declare read-only `GITHUB_TOKEN` permissions at the workflow level and grant write scopes only on the jobs that upload SARIF, submit SBOMs, comment on PRs, or publish releases.

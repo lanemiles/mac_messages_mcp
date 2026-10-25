@@ -211,17 +211,36 @@ def _decode_attributed_body(attributed_body: bytes | None) -> str | None:
     )
 
 
-def _is_attachment_placeholder_body(body: str | None) -> bool:
-    """Return True when a decoded body is only U+FFFD replacement characters.
+# Characters that stand in for an attachment inside a message body. Messages
+# writes U+FFFC (OBJECT REPLACEMENT CHARACTER) into attributedBody where a file
+# sits and omits it from the `text` column; U+FFFD is what a lossy decode of
+# such a blob used to produce.
+_ATTACHMENT_PLACEHOLDER_CHARS = frozenset("\ufffc\ufffd")
 
-    Attachment/button messages store no readable string in text or
-    attributedBody; the typedstream decode yields replacement chars that are
-    truthy but carry no content. Render those as [attachment] instead.
+
+def _is_attachment_placeholder_body(body: str | None) -> bool:
+    """Return True when a decoded body is nothing but attachment placeholders.
+
+    An attachment-only message stores no words, only the object-replacement
+    character standing in for the file, which is truthy but carries no
+    content. Render those as [attachment] instead of a stray glyph.
     """
     if not body:
         return False
     stripped = body.strip()
-    return bool(stripped) and all(ch == "\ufffd" for ch in stripped)
+    return bool(stripped) and all(
+        ch in _ATTACHMENT_PLACEHOLDER_CHARS for ch in stripped
+    )
+
+
+def _strip_attachment_placeholders(body: str) -> str:
+    """Drop U+FFFC placeholders from a body that also has words.
+
+    This matches what Messages itself puts in the `text` column for a
+    text-plus-attachment message, so rendered bodies and send verification
+    compare like with like. The attachment summary names the files.
+    """
+    return body.replace("\ufffc", "")
 
 
 def get_messages_db_path() -> str:
@@ -1082,11 +1101,18 @@ def _candidate_handles(recipient: str) -> list[str]:
 
 
 def _row_text(row: dict[str, Any]) -> str | None:
-    """Best-effort plain text for a message row (`text` column, else attributedBody)."""
+    """Best-effort plain text for a message row (`text` column, else attributedBody).
+
+    A decoded attributedBody has its attachment placeholders removed so it
+    compares equal to the words Messages would have put in `text`.
+    """
     text = row.get("text")
     if text:
         return text
-    return extract_body_from_attributed(row.get("attributedBody"))
+    decoded = extract_body_from_attributed(row.get("attributedBody"))
+    if decoded is None or _is_attachment_placeholder_body(decoded):
+        return decoded
+    return _strip_attachment_placeholders(decoded)
 
 
 def _verify_send_in_db(
@@ -1815,7 +1841,9 @@ def get_recent_messages(
             ascending order — the cursor form used for incremental reads.
 
     Returns:
-        Formatted string with recent messages
+        Formatted string with recent messages. Every line carries the message
+        ROWID as ``#N`` after the timestamp; a cursor read also ends with the
+        highest ROWID seen so the caller knows what to pass next.
 
     """
     # Input validation
@@ -1957,6 +1985,8 @@ def get_recent_messages(
                 continue
         if _is_attachment_placeholder_body(body):
             body = "[attachment]"
+        else:
+            body = _strip_attachment_placeholders(body)
 
         # Convert Apple timestamp to readable date
         try:
@@ -1980,11 +2010,11 @@ def get_recent_messages(
         if not group_chat_name and chat_display_name and chat_is_group:
             group_chat_name = chat_display_name
 
-        message_prefix = f"[{date_str}]"
+        message_rowid = msg.get("ROWID")
+        message_prefix = _message_line_prefix(date_str, message_rowid)
         if group_chat_name:
             message_prefix += f" [{group_chat_name}]"
 
-        message_rowid = msg.get("ROWID")
         attachment_summary = _format_attachment_summary(
             attachments_by_msg.get(message_rowid, []) if message_rowid else [],
         )
@@ -1993,12 +2023,28 @@ def get_recent_messages(
             f"{message_prefix} {direction}{metadata}: {body}{attachment_summary}",
         )
 
+    # A cursor read must always hand back the next cursor, even when every
+    # fetched row rendered nothing (attachment-only rows, deleted bodies):
+    # those rows still advance the cursor, and reporting "no new messages"
+    # would make a polling caller re-read them forever.
+    newest_rowid = _newest_rowid(messages)
+
     if not formatted_messages:
         if since_rowid is not None:
+            if newest_rowid is not None and newest_rowid > since_rowid:
+                return (
+                    f"No displayable new messages since ROWID {since_rowid}; "
+                    f"{_cursor_note(newest_rowid)}"
+                )
             return f"No new messages since ROWID {since_rowid}."
         return "No messages found in the specified time period."
 
-    if len(messages) >= limit:
+    if since_rowid is not None and newest_rowid is not None:
+        note = _cursor_note(newest_rowid)
+        if len(messages) >= limit:
+            note = "More may exist; " + note
+        formatted_messages.append(f"({note})")
+    elif len(messages) >= limit:
         formatted_messages.append(
             f"(Showing {len(messages)} message(s) from offset {offset}; older "
             f"messages may exist - call again with offset={offset + limit}.)",
@@ -2007,8 +2053,38 @@ def get_recent_messages(
     return "\n".join(formatted_messages)
 
 
-# Chat styles macOS writes into chat.style. Anything else is a 1:1 thread.
-_CONVERSATION_STYLES: dict[int, str] = {43: "group", 45: "business"}
+def _message_line_prefix(date_str: str, rowid: Any) -> str:
+    """``[date] #rowid`` — the ROWID is the cursor ``since_rowid`` consumes."""
+    prefix = f"[{date_str}]"
+    if rowid is not None:
+        prefix += f" #{rowid}"
+    return prefix
+
+
+def _newest_rowid(rows: list[dict[str, Any]]) -> int | None:
+    """Highest message ROWID among fetched rows, or None when there is none."""
+    rowids: list[int] = []
+    for row in rows:
+        try:
+            rowids.append(int(row["ROWID"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return max(rowids) if rowids else None
+
+
+def _cursor_note(newest_rowid: int) -> str:
+    """Tell a polling caller exactly what to pass next."""
+    return (
+        f"cursor: highest ROWID seen is {newest_rowid}; pass "
+        f"since_rowid={newest_rowid} for anything newer."
+    )
+
+
+# Chat styles macOS writes into chat.style: 43 is a group thread and 45 a
+# one-to-one thread. Business (Apple Messages for Business) threads are also
+# style 45; they are told apart by their "urn:biz:..." chat identifier.
+_CONVERSATION_STYLES: dict[int, str] = {43: "group", 45: "direct"}
+_BUSINESS_CHAT_PREFIX = "urn:biz"
 
 # Upper bound for one tool_wait_for_new_messages call. The MCP stdio transport
 # has no server push, so waiting is a bounded poll; a client that needs a longer
@@ -2017,8 +2093,14 @@ _MAX_WAIT_SECONDS = 300
 _WAIT_BATCH_LIMIT = 50
 
 
-def _conversation_kind(style: Any) -> str:
-    """Map a chat.style value to a human label; unknown styles are direct."""
+def _conversation_kind(style: Any, chat_identifier: Any = None) -> str:
+    """Label a chat as group, business, or direct.
+
+    ``style`` alone cannot separate a business thread from an ordinary 1:1
+    thread (both are 45); the business identifier prefix does.
+    """
+    if str(chat_identifier or "").startswith(_BUSINESS_CHAT_PREFIX):
+        return "business"
     try:
         return _CONVERSATION_STYLES.get(int(style), "direct")
     except (TypeError, ValueError):
@@ -2083,7 +2165,8 @@ def list_conversations(limit: int = 50, unread_only: bool = False) -> str:
             last_str = "unknown"
         identifier = neutralize_untrusted_text(str(row.get("chat_identifier") or ""))
         lines.append(
-            f"{len(lines) + 1}. [{_conversation_kind(row.get('style'))}] "
+            f"{len(lines) + 1}. "
+            f"[{_conversation_kind(row.get('style'), row.get('chat_identifier'))}] "
             f"{neutralize_untrusted_text(str(name))} (chat ID: {identifier}) - "
             f"{row.get('message_count') or 0} message(s), "
             f"{row.get('unread_count') or 0} unread, last {last_str}",
@@ -2106,8 +2189,11 @@ def wait_for_new_messages(
     """Block until a message newer than ``since_rowid`` exists, or time out.
 
     An MCP stdio server cannot push, so this is a bounded poll: it returns the
-    new messages as soon as any appear, or a timeout notice. Call it in a loop,
-    passing the highest ROWID returned last time as the next ``since_rowid``.
+    new messages as soon as any appear *within the given scope*, or a timeout
+    notice. Call it in a loop, passing the highest ROWID returned last time
+    (the ``#N`` on each line, repeated in the closing cursor note) as the next
+    ``since_rowid``. A ``contact`` or ``chat_id`` filter narrows what wakes
+    the wait, not just what is rendered.
 
     Args:
         since_rowid: Cursor; only messages with a greater ROWID are returned.
@@ -2124,13 +2210,38 @@ def wait_for_new_messages(
     if poll_interval <= 0:
         return "Error: poll_interval must be positive."
 
+    # Resolve the contact/chat filter once, up front, so an unresolvable
+    # scope is reported now instead of after the timeout, and so the probe
+    # below watches only this scope. Probing the whole table and then
+    # filtering the read used to wake the wait for any thread's traffic and
+    # return "no new messages" without advancing the cursor, which left a
+    # polling caller spinning.
+    handle_ids, chat_row_id, _chat_name, _chat_is_group, scope_error = (
+        _resolve_message_scope(contact, chat_id)
+    )
+    if scope_error is not None:
+        return scope_error
+
+    probe_clauses = ["m.ROWID > ?"]
+    probe_params: list[Any] = [since_rowid]
+    if handle_ids:
+        placeholders = ", ".join(["?" for _ in handle_ids])
+        probe_clauses.append(f"m.handle_id IN ({placeholders})")
+        probe_params.extend(handle_ids)
+    if chat_row_id is not None:
+        probe_clauses.append(
+            "m.ROWID IN (SELECT message_id FROM chat_message_join "
+            "WHERE chat_id = ?)",
+        )
+        probe_params.append(chat_row_id)
+    probe_query = (
+        "SELECT COALESCE(MAX(m.ROWID), 0) AS max_rowid FROM message m "
+        f"WHERE {' AND '.join(probe_clauses)}"
+    )
+
     deadline = time.monotonic() + timeout_seconds
     while True:
-        rows = query_messages_db(
-            "SELECT COALESCE(MAX(m.ROWID), 0) AS max_rowid FROM message m "
-            "WHERE m.ROWID > ?",
-            (since_rowid,),
-        )
+        rows = query_messages_db(probe_query, tuple(probe_params))
         max_rowid = 0
         if rows and "error" not in rows[0]:
             try:
@@ -2308,6 +2419,8 @@ def fuzzy_search_messages(
         body = msg_dict.get("text") or extract_body_from_attributed(
             msg_dict.get("attributedBody"),
         )
+        if body and not _is_attachment_placeholder_body(body):
+            body = _strip_attachment_placeholders(body)
         if body and body.strip():
             message_candidates.append((body, msg_dict))
 
@@ -2375,6 +2488,8 @@ def fuzzy_search_messages(
         )
         if _is_attachment_placeholder_body(original_body):
             original_body = "[attachment]"
+        else:
+            original_body = _strip_attachment_placeholders(original_body)
         date_val = _from_apple_ns(int(msg_dict["date"]))
         date_str = date_val.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -2384,10 +2499,11 @@ def fuzzy_search_messages(
         metadata = _message_metadata_tags(msg_dict)
         cache_roomnames = msg_dict.get("cache_roomnames")
         group_chat_name = chat_mapping.get(cache_roomnames) if cache_roomnames else None
-        message_prefix = f"[{date_str}] (Score: {score:.2f})" + (
-            f" [{group_chat_name}]" if group_chat_name else ""
-        )
         message_rowid = msg_dict.get("ROWID")
+        message_prefix = (
+            f"{_message_line_prefix(date_str, message_rowid)} (Score: {score:.2f})"
+            + (f" [{group_chat_name}]" if group_chat_name else "")
+        )
         attachment_summary = _format_attachment_summary(
             attachments_by_msg.get(message_rowid, []) if message_rowid else [],
         )

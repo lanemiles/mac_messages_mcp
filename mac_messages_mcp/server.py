@@ -146,7 +146,9 @@ def tool_get_recent_messages(
         Field(
             description=(
                 "Cursor: return only messages with a greater ROWID, oldest "
-                "first. Use for incremental reads."
+                "first. Each returned line shows its ROWID as #N after the "
+                "timestamp, and a cursor read ends with the highest ROWID "
+                "seen; pass that as the next since_rowid."
             ),
             ge=0,
         ),
@@ -788,8 +790,9 @@ def tool_wait_for_new_messages(
         int,
         Field(
             description=(
-                "Cursor: the highest message ROWID already seen. Only newer "
-                "messages are returned."
+                "Cursor: the highest message ROWID already seen (the #N on a "
+                "message line, or the cursor note at the end of a read). Only "
+                "newer messages are returned."
             ),
             ge=0,
         ),
@@ -815,9 +818,11 @@ def tool_wait_for_new_messages(
 
     Read-only. An MCP stdio server cannot push, so this is a bounded poll: call
     it in a loop, feeding the highest ROWID you have seen back as since_rowid.
-    Returned message text is structurally neutralized and wrapped in
-    <untrusted-mcp-output>. Use tool_list_conversations with unread_only=true
-    when you do not need to wait for new arrivals.
+    The contact or chat_id filter decides which threads wake the wait, so
+    traffic elsewhere does not end a scoped wait early; an unresolvable filter
+    is reported immediately. Returned message text is structurally neutralized
+    and wrapped in <untrusted-mcp-output>. Use tool_list_conversations with
+    unread_only=true when you do not need to wait for new arrivals.
     """
     logger.info(
         "Waiting for new messages: since_rowid=%s timeout_seconds=%s",

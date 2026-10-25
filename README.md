@@ -341,16 +341,20 @@ Reads append compact tags when the message row carries the data, so output stays
 unchanged for old or partial databases:
 
 ```text
-[2026-10-01 09:14:02] Alice [iMessage] [unread]: running late, sorry
-[2026-10-01 09:15:40] You [iMessage] [not delivered]: no worries
-[2026-10-01 09:15:55] Alice [iMessage] [tapback: liked]: (reaction)
-[2026-10-01 09:16:10] Bob [SMS] [reply]: got it
+[2026-10-01 09:14:02] #4512 Alice [iMessage] [unread]: running late, sorry
+[2026-10-01 09:15:40] #4513 You [iMessage] [not delivered]: no worries
+[2026-10-01 09:15:55] #4514 Alice [iMessage] [tapback: liked]: (reaction)
+[2026-10-01 09:16:10] #4515 Bob [SMS] [reply]: got it
 ```
 
-`tool_get_recent_messages` closes with a note when a page fills up, naming the
-next `offset` to use. Passing `since_rowid` switches it to a forward cursor read
-(oldest first) that ignores the `hours` window, which is the pattern
-`tool_wait_for_new_messages` polls on.
+The `#N` after each timestamp is the message ROWID, which is the value
+`since_rowid` consumes. `tool_get_recent_messages` closes with a note when a
+page fills up, naming the next `offset` to use. Passing `since_rowid` switches
+it to a forward cursor read (oldest first) that ignores the `hours` window and
+ends with a cursor note stating the highest ROWID seen, even when none of the
+new rows had displayable text. `tool_wait_for_new_messages` polls on that
+cursor; its `contact` and `chat_id` filters decide which threads wake the wait,
+so a text from someone else does not end a scoped wait early.
 
 ### What it deliberately does not do
 

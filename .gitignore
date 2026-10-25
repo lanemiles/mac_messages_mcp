@@ -66,3 +66,5 @@ venv.bak/
 # MCPB build artifacts (vendored uv binary + packed extension)
 bin/
 *.mcpb 
+# Raw probe rows dumped from a real chat.db may contain personal messages
+tests/fixtures/*_probe.txt

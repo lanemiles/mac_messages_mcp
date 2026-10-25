@@ -74,10 +74,13 @@ never send anything.
 - `limit` (default 100, max 1000) and `offset` page newest-first; when a page
   fills, the output names the next `offset` to use.
 - `unread_only=true` returns only inbound messages still marked unread.
+- Every message line shows its ROWID as `#N` right after the timestamp, e.g.
+  `[2026-10-01 09:14:02] #4512 Alice [iMessage]: running late`. That `#N` is
+  the cursor value; it is a message ROWID, not an attachment ID.
 - `since_rowid` switches to an incremental read: only messages with a greater
-  ROWID, oldest first, ignoring the `hours` window. Feed the highest ROWID you
-  have seen back as the next cursor; `tool_wait_for_new_messages` polls the
-  same way.
+  ROWID, oldest first, ignoring the `hours` window. The output ends with a
+  cursor note naming the highest ROWID seen and the exact `since_rowid` to pass
+  next; `tool_wait_for_new_messages` polls the same way.
 - Message lines may carry service and state tags such as `[iMessage]`, `[SMS]`,
   `[unread]`, `[not delivered]`, `[reply]`, or `[tapback: liked]`.
 
@@ -97,8 +100,11 @@ activity. Use it to find a thread ID or to triage unread work; use
 `tool_get_chats` when you only need send-ready group chat IDs.
 
 `tool_wait_for_new_messages(since_rowid=0, timeout_seconds=30, poll_interval=1, contact=None, chat_id=None)` is a bounded poll, not a push: it returns
-newer messages or an empty result when the timeout expires (max 300 seconds).
-Call it in a loop, feeding the highest ROWID back as `since_rowid`. Use
+newer messages or a timeout notice when none arrive (max 300 seconds). A
+`contact` or `chat_id` filter narrows what wakes the wait: traffic in other
+threads does not end it early. Call it in a loop, feeding the `since_rowid`
+from the previous result's cursor note back in. An unresolvable `contact` or
+`chat_id` is reported immediately rather than after the timeout. Use
 `tool_list_conversations(unread_only=True)` when you just need what is waiting.
 
 Message lines may include attachment markers such as

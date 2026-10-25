@@ -332,7 +332,9 @@ def test_list_conversations_labels_kinds_and_unread_counts():
     ]
     with patch("mac_messages_mcp.messages.query_messages_db", return_value=rows):
         result = list_conversations()
-    assert "[business]" in result
+    # Style 45 is an ordinary one-to-one thread, not a business thread.
+    assert "[direct]" in result
+    assert "[business]" not in result
     assert "[group]" in result
     assert "2 unread" in result
     assert "no messages" in result
