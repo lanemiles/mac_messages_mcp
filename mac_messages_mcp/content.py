@@ -1,7 +1,7 @@
 # Copyright (c) 2023 Carter Lasalle
 """Attachment *content* search for the Messages database.
 
-``messages.search_attachments`` only matches attachment metadata (filename,
+``attachments.search_attachments`` only matches attachment metadata (filename,
 MIME type, dates). This module adds a best-effort full-text scan of the
 attachment files themselves: plain text is read directly, PDFs are text
 extracted with ``pypdf`` when installed, and images are OCR'd with
@@ -14,11 +14,14 @@ fenced through the untrusted-output boundary, like the rest of the suite.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import messages
+from . import attachments as _attachments
+from . import contacts as _contacts
+from . import db as _db
+from .attachments import ATTACHMENT_SELECT_COLS
+from .phone import canonical_handle
 from .untrusted import bound_untrusted_output, neutralize_untrusted_text
 
 # Plain-text-ish extensions we decode directly even when chat.db has no MIME
@@ -46,75 +49,30 @@ _MAX_SNIPPET_CHARS = 200
 _MAX_PDF_PAGES = 50
 
 
-def _validate_dates(
-    start_date: str | None,
-    end_date: str | None,
-) -> tuple[str | None, list[str], list[Any]]:
-    """Validate ISO dates and build the ``WHERE`` fragments and params.
-
-    Returns ``(error, where_clauses, params)``. ``error`` is non-None only
-    when a supplied date is not a ``YYYY-MM-DD`` string.
-    """
-    where_clauses: list[str] = []
-    params: list[Any] = []
-
-    if start_date:
-        try:
-            dt = datetime.strptime(start_date, "%Y-%m-%d").replace(
-                tzinfo=timezone.utc,
-            )
-        except ValueError:
-            return (
-                f"Error: start_date must be YYYY-MM-DD, got '{start_date}'.",
-                [],
-                [],
-            )
-        where_clauses.append("CAST(m.date AS INTEGER) >= ?")
-        params.append(messages._to_apple_ns(dt))
-
-    if end_date:
-        try:
-            dt = datetime.strptime(end_date, "%Y-%m-%d").replace(
-                tzinfo=timezone.utc,
-            )
-        except ValueError:
-            return (
-                f"Error: end_date must be YYYY-MM-DD, got '{end_date}'.",
-                [],
-                [],
-            )
-        # Inclusive: the exclusive bound is the start of the following day.
-        dt_end = dt + timedelta(days=1)
-        where_clauses.append("CAST(m.date AS INTEGER) < ?")
-        params.append(messages._to_apple_ns(dt_end))
-
-    return None, where_clauses, params
-
-
 def _resolve_contact_handles(contact: str) -> list[int] | None:
     """Resolve a contact selector to handle ROWIDs, or None when unknown.
 
-    Mirrors ``messages.search_attachments``: email handles are looked up
+    Mirrors ``attachments.search_attachments``: email handles are looked up
     case-insensitively, digit-containing inputs go through the phone resolver,
     and anything else is treated as a name and fuzzy matched.
     """
     contact = str(contact).strip()
     if "@" in contact:
-        results = messages.query_messages_db(
+        results = _db.query_messages_db(
             "SELECT ROWID FROM handle WHERE id = ? COLLATE NOCASE",
-            (messages.canonical_handle(contact) or contact.strip(),),
+            (canonical_handle(contact) or contact.strip(),),
         )
         if results and "error" not in results[0]:
             return [r["ROWID"] for r in results]
         return None
     if any(c.isdigit() for c in contact):
-        return messages.find_handles_by_phone(contact)
-    matches = messages.find_contact_by_name(contact)
+        return _contacts.find_handles_by_phone(contact)
+    matches = _contacts.find_contact_by_name(contact)
     if not matches:
         return None
     resolved: list[int] = []
     for match in matches:
-        handles = messages.find_handles_by_phone(match["phone"]) or []
+        handles = _contacts.find_handles_by_phone(match["phone"]) or []
         resolved.extend(handles)
     return resolved or None
 
@@ -131,9 +89,10 @@ def _build_search_query(
     Returns ``(error, params, query)``. ``error`` is non-None for a bad date
     or an unresolvable contact.
     """
-    date_error, where_clauses, params = _validate_dates(start_date, end_date)
+    where_clauses, params, date_error = _db.date_range_clauses(start_date, end_date)
     if date_error is not None:
         return date_error, (), None
+    params = list(params)
 
     if mime_type:
         like_pattern = mime_type if "%" in mime_type else f"{mime_type}%"
@@ -152,7 +111,7 @@ def _build_search_query(
 
     query = f"""
         SELECT
-            {messages._ATTACHMENT_SELECT_COLS},
+            {ATTACHMENT_SELECT_COLS},
             m.date AS message_date,
             m.is_from_me AS is_from_me,
             m.handle_id AS handle_id
@@ -278,11 +237,7 @@ def _format_match_line(
     mime = neutralize_untrusted_text(shaped.get("mime_type") or "unknown")
 
     try:
-        date_str = (
-            messages._from_apple_ns(int(row["message_date"]))
-            .astimezone()
-            .strftime("%Y-%m-%d %H:%M:%S")
-        )
+        date_str = _db.format_local(_db.from_apple_ns(int(row["message_date"])))
     except (KeyError, ValueError, TypeError, OverflowError):
         date_str = "Unknown date"
 
@@ -368,11 +323,11 @@ def search_attachment_contents(
     if error is not None:
         return error
 
-    rows = messages.query_messages_db(sql, params)  # type: ignore[arg-type]
+    rows = _db.query_messages_db(sql, params)  # type: ignore[arg-type]
     if rows and "error" in rows[0]:
         return f"Error querying attachments: {rows[0]['error']}"
 
-    rows = messages._filter_excluded_attachments(rows)
+    rows = _attachments.filter_excluded_attachments(rows)
 
     safe_query = neutralize_untrusted_text(query)
     matches: list[str] = []
@@ -389,7 +344,7 @@ def search_attachment_contents(
         if len(matches) >= limit:
             break
         scanned += 1
-        shaped = messages._shape_attachment(row)
+        shaped = _attachments.shape_attachment(row)
         path = shaped.get("path")
         if not path or not shaped.get("exists"):
             skipped["missing"] += 1

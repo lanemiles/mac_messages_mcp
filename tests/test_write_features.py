@@ -32,10 +32,10 @@ from mac_messages_mcp.server import (
 
 
 @patch(
-    "mac_messages_mcp.messages._send_via_temp_file",
+    "mac_messages_mcp.send._send_via_temp_file",
     return_value="Message sent successfully via iMessage to Bob",
 )
-@patch("mac_messages_mcp.messages.run_applescript")
+@patch("mac_messages_mcp.applescript.run_applescript")
 def test_send_with_attachment_reports_the_file(mock_applescript, _temp, tmp_path):
     mock_applescript.return_value = ""
     doc = tmp_path / "report.pdf"
@@ -49,7 +49,7 @@ def test_send_with_attachment_reports_the_file(mock_applescript, _temp, tmp_path
     assert str(doc.resolve()) in script
 
 
-@patch("mac_messages_mcp.messages.run_applescript", return_value="")
+@patch("mac_messages_mcp.applescript.run_applescript", return_value="")
 def test_attachment_only_send_needs_no_text(mock_applescript, tmp_path):
     doc = tmp_path / "notes.txt"
     doc.write_text("hi", encoding="utf-8")
@@ -60,7 +60,7 @@ def test_attachment_only_send_needs_no_text(mock_applescript, tmp_path):
     assert "notes.txt sent" in result
 
 
-@patch("mac_messages_mcp.messages.run_applescript")
+@patch("mac_messages_mcp.applescript.run_applescript")
 def test_failed_attachment_is_reported_without_blocking_the_text(
     mock_applescript,
     tmp_path,
@@ -70,7 +70,7 @@ def test_failed_attachment_is_reported_without_blocking_the_text(
     doc.write_bytes(b"\xff\xd8")
 
     with patch(
-        "mac_messages_mcp.messages._send_via_temp_file",
+        "mac_messages_mcp.send._send_via_temp_file",
         return_value="Message sent successfully via iMessage to Bob",
     ):
         result = send_message("+15551234567", "caption", attachment_paths=[str(doc)])
@@ -89,7 +89,7 @@ def test_group_chat_attachments_are_refused(tmp_path):
 
 
 def test_missing_attachment_path_is_rejected_before_sending(tmp_path):
-    with patch("mac_messages_mcp.messages._send_message_to_recipient") as dispatch:
+    with patch("mac_messages_mcp.send._send_message_to_recipient") as dispatch:
         result = send_message(
             "+15551234567",
             "hi",
@@ -117,7 +117,7 @@ def test_empty_message_without_attachments_is_rejected():
 # ---------------------------------------------------------------------------
 
 
-@patch("mac_messages_mcp.messages.run_applescript", return_value="success")
+@patch("mac_messages_mcp.applescript.run_applescript", return_value="success")
 def test_create_contact_splits_the_name_and_keeps_e164(mock_applescript):
     result = create_contact("Ada Lovelace", "+15551234567")
 
@@ -130,7 +130,7 @@ def test_create_contact_splits_the_name_and_keeps_e164(mock_applescript):
     assert 'label:"mobile"' in script
 
 
-@patch("mac_messages_mcp.messages.run_applescript", return_value="success")
+@patch("mac_messages_mcp.applescript.run_applescript", return_value="success")
 def test_create_contact_supports_single_names_and_labels(mock_applescript):
     create_contact("Prince", "+15551234567", label="home")
 
@@ -146,7 +146,7 @@ def test_create_contact_validates_input():
 
 
 @patch(
-    "mac_messages_mcp.messages.run_applescript", return_value="Error: not authorized"
+    "mac_messages_mcp.applescript.run_applescript", return_value="Error: not authorized"
 )
 def test_create_contact_surfaces_applescript_errors(mock_applescript):
     result = create_contact("Ada", "+15551234567")
@@ -154,7 +154,7 @@ def test_create_contact_surfaces_applescript_errors(mock_applescript):
     assert "Error creating contact: not authorized" in result
 
 
-@patch("mac_messages_mcp.messages.run_applescript", return_value="success")
+@patch("mac_messages_mcp.applescript.run_applescript", return_value="success")
 def test_create_contact_escapes_applescript(mock_applescript):
     create_contact('Ada "Countess"', "+15551234567")
 
@@ -344,7 +344,7 @@ def test_list_conversations_tool_delegates():
         result = tool_list_conversations(limit=5, unread_only=True)
 
     assert "CONVERSATIONS" in result
-    delegate.assert_called_once_with(limit=5, unread_only=True)
+    delegate.assert_called_once_with(limit=5, unread_only=True, format="text")
 
 
 def test_wait_tool_delegates():
@@ -361,6 +361,7 @@ def test_wait_tool_delegates():
         poll_interval=1.0,
         contact=None,
         chat_id=None,
+        format="text",
     )
 
 

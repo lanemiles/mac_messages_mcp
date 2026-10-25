@@ -306,11 +306,12 @@ this.
 | Tool                               | Purpose                                                                                                             | Side effect                     |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
 | `tool_get_recent_messages`         | Read recent messages, filtered by contact, group chat ID, date range, or unread state; page with `limit`/`offset`    | Read-only                       |
-| `tool_fuzzy_search_messages`       | Search message bodies by approximate text match, scoped to a contact or chat; defaults to 30 days, or `hours=0`     | Read-only                       |
+| `tool_fuzzy_search_messages`       | Search message bodies across all history through a local full-text index, then fuzzy-rank; scope by contact or chat | Read-only                       |
 | `tool_list_conversations`          | List every conversation with kind, message count, unread count, and last activity                                   | Read-only                       |
 | `tool_wait_for_new_messages`       | Block until a message newer than a ROWID cursor arrives, or the timeout expires                                     | Read-only                       |
 | `tool_find_contact`                | Fuzzy-match a name in Contacts and return phone numbers                                                             | Read-only                       |
-| `tool_get_chats`                   | List named group chats and their identifiers                                                                        | Read-only                       |
+| `tool_get_chats`                   | List every group chat and its identifier; unnamed groups appear as `(unnamed: participants)`                        | Read-only                       |
+| `tool_get_chat_participants`       | List who is in a chat, by name and number                                                                           | Read-only                       |
 | `tool_search_attachments`          | Find attachment metadata by date, contact, MIME type, and limit                                                     | Read-only                       |
 | `tool_search_attachment_contents`  | Search inside attachment text/PDF contents by date, contact, and MIME type                                          | Read-only                       |
 | `tool_get_attachment`              | Fetch one attachment by ID, inline when supported or as a local path                                                | Read-only                       |
@@ -320,8 +321,8 @@ this.
 | `tool_check_addressbook`           | Diagnose Contacts/AddressBook database access                                                                       | Read-only                       |
 | `tool_send_message`                | Send one direct or group message through Messages.app, optionally with file attachments and elicitation approval    | **Sends a real message**        |
 | `tool_create_contact`              | Create one Contacts.app entry with a phone number                                                                   | **Changes Contacts**            |
-| `tool_schedule_message`            | Queue a message for later delivery while this server process runs                                                   | **Sends a real message later**  |
-| `tool_list_scheduled_messages`     | List the in-process scheduled-message queue and its status                                                          | Read-only                       |
+| `tool_schedule_message`            | Queue a message for later delivery; the queue is saved to disk and survives a restart                               | **Sends a real message later**  |
+| `tool_list_scheduled_messages`     | List the scheduled-message queue and each job's status (pending, sent, failed, missed)                              | Read-only                       |
 | `tool_cancel_scheduled_message`    | Cancel one pending scheduled message                                                                                | Read-only                       |
 
 <!-- markdownlint-enable MD013 -->
@@ -335,6 +336,12 @@ The server also exposes two MCP resources:
 - `messages://recent/{hours}`
 - `messages://contact/{contact}/{hours}`
 
+Every read tool accepts `format="json"` and then returns one JSON object inside
+the usual untrusted fence instead of prose: one field per fact, bodies that
+round-trip exactly, ISO-8601 timestamps carrying the Mac's UTC offset, and a
+`cursor` for incremental reads. Date filters (`start_date`, `end_date`) are
+days in the Mac's local timezone, matching the displayed timestamps.
+
 ### Message metadata, paging, and cursors
 
 Reads append compact tags when the message row carries the data, so output stays
@@ -342,10 +349,18 @@ unchanged for old or partial databases:
 
 ```text
 [2026-10-01 09:14:02] #4512 Alice [iMessage] [unread]: running late, sorry
-[2026-10-01 09:15:40] #4513 You [iMessage] [not delivered]: no worries
-[2026-10-01 09:15:55] #4514 Alice [iMessage] [tapback: liked]: (reaction)
-[2026-10-01 09:16:10] #4515 Bob [SMS] [reply]: got it
+[2026-10-01 09:15:40] #4513 You → Alice [iMessage] [read 09:16]: no worries
+[2026-10-01 09:15:55] #4514 Alice [iMessage] [tapback: liked → "no worries"]: (reaction)
+[2026-10-01 09:16:10] #4515 [group: Alice, Bob, Carol] Bob [SMS] [reply to: "running late, sorry"]: got it
+[2026-10-01 09:20:00] #4516 [Family] Alice [iMessage] [event]: Alice named the group "Family"
 ```
+
+Outbound lines name their recipient on 1:1 threads (`You → Alice`). Group
+chats are labelled `[Family]` when named and `[group: Alice, Bob, Carol +2]`
+when not. Tapbacks and replies quote what they point at; edited, unsent, audio,
+link-preview, and iMessage-app rows are tagged (`[edited]`, `[unsent]`,
+`[audio message]`, `[link preview]`, `[app: …]`); group events render as
+`[event]` lines; sent messages carry `[delivered HH:MM]` or `[read HH:MM]`.
 
 The `#N` after each timestamp is the message ROWID, which is the value
 `since_rowid` consumes. `tool_get_recent_messages` closes with a note when a
@@ -368,8 +383,9 @@ pretending:
 - editing, unsending, deleting, or marking a message read, and saving drafts
 - editing or merging an existing Contacts card (`tool_create_contact` creates a
   new one)
-- scheduled sends rely on the server process staying alive; nothing is
-  persisted, so a scheduled message is lost if the client disconnects first
+- scheduled sends that come due more than an hour before the server is running
+  again are marked `missed` rather than sent at a surprising time (the queue
+  itself is persisted and survives restarts)
 
 ## Agent skill
 
@@ -432,31 +448,49 @@ Mac Messages MCP is a small Python package with one job per module:
 
 ```text
 mac_messages_mcp/
-  server.py       FastMCP server: tools, prompts, resources, stdio transport
-  cli.py          mac-messages-cli terminal interface
-  messages.py     chat.db reads and AppleScript sends for Messages.app
-  content.py      Best-effort text/PDF attachment content search
-  phone.py        E.164 normalization against the Mac's configured region
-  scheduler.py    In-process scheduled-send queue
-  untrusted.py    Structural neutralization of Messages/Contacts-derived text
+  server.py        FastMCP server: tools, prompts, resources, stdio transport
+  cli.py           mac-messages-cli terminal interface
+  messages.py      Facade re-exporting the modules below (import compatibility)
+  db.py            Read-only chat.db access: one cached connection per thread,
+                   Apple-epoch timestamps, local-day date filters, diagnostics
+  read.py          Body decoding, scope resolution, reads, waiting, fuzzy search
+  chats.py         Chat lookup, group membership, conversation listing
+  contacts.py      AddressBook lookup, fuzzy name matching, handle resolution,
+                   batched sender-name cache, Contacts.app writes
+  send.py          Messages.app sends and chat.db outcome verification
+  attachments.py   Attachment metadata, search, inline image fetches
+  content.py       Best-effort text/PDF attachment content search
+  search_index.py  Local FTS5 index over message bodies, updated incrementally
+  output.py        Output-format validation and JSON serialization
+  policy.py        Environment-configured write limits (roots, read-only, …)
+  scheduler.py     Scheduled-send queue persisted to disk with catch-up
+  applescript.py   osascript execution and escaping
+  phone.py         E.164 normalization against the Mac's configured region
+  untrusted.py     Structural neutralization of Messages/Contacts-derived text
 scripts/
-  build_mcpb.py   Builds the Claude Desktop .mcpb extension
-  bump_version.py Keeps version metadata in sync across release files
-tests/            Pytest suite over temporary databases and mocked AppleScript
-main.py           Stdio entry point for MCP clients
-manifest.json     MCPB manifest for the Claude Desktop extension
+  build_mcpb.py    Builds the Claude Desktop .mcpb extension
+  bump_version.py  Keeps version metadata in sync across release files
+tests/             Pytest suite; real-schema fixtures in tests/fixtures/ and
+                   tests/chatdb.py, plus mocked AppleScript
+main.py            Stdio entry point for MCP clients
+manifest.json      MCPB manifest for the Claude Desktop extension
 ```
 
 Reads go straight to `chat.db` and the AddressBook database; sends go through
 AppleScript into Messages.app. Model-facing payloads pass through
-`untrusted.py` before they reach the client.
+`untrusted.py` before they reach the client. `tests/fixtures/chat_schema.sql`
+is the DDL of a real macOS chat.db, so the test suite runs every query against
+the production schema.
 
 ## Privacy and security
 
 - Messages and Contacts SQLite connections use read-only mode and SQLite
   `query_only`.
-- The server does not upload, mirror, index, or maintain its own message
-  archive.
+- The server does not upload or mirror messages anywhere. It keeps two local,
+  private (mode 0600) derived files under
+  `~/Library/Application Support/mac-messages-mcp/`: a full-text search index
+  over message bodies and the scheduled-send queue. `MAC_MESSAGES_SEARCH_INDEX`
+  and `MAC_MESSAGES_SCHEDULE_STORE` relocate them, or `none` disables each.
 - Results are written to the local MCP stdio connection started by your client.
 - Messages/Contacts-derived tool and resource output is structurally
   neutralized (embedded newlines and ASCII controls cannot form extra
@@ -470,8 +504,21 @@ AppleScript into Messages.app. Model-facing payloads pass through
   size-limited for inline images. Filename, MIME, path, and other metadata
   text is neutralized with the same boundary; image payloads are preserved.
 - Sending is isolated in `tool_send_message`, escapes AppleScript inputs, and
-  uses a bounded execution timeout. This server does not perform human
-  confirmation; the MCP client must gate sends.
+  uses a bounded execution timeout. By default the server performs no human
+  confirmation and the MCP client must gate sends; the environment variables
+  below tighten that server-side, and they bind scheduled sends and direct
+  Python callers too:
+  - `MAC_MESSAGES_ATTACHMENT_ROOTS` — folders files may be attached from
+    (default `~/Desktop:~/Downloads:~/Documents:~/Pictures`; symlinks are
+    resolved, hidden files and `~/Library` are always refused; `*` disables).
+  - `MAC_MESSAGES_READ_ONLY=1` — the send, schedule, and contact-creation tools
+    are not registered at all.
+  - `MAC_MESSAGES_REQUIRE_CONFIRM=1` — every send asks the human through MCP
+    elicitation regardless of the `confirm` argument; scheduling is refused.
+  - `MAC_MESSAGES_MAX_SENDS_PER_HOUR` — cap on send attempts per rolling hour.
+  - `MAC_MESSAGES_ALLOWED_RECIPIENTS` — comma-separated numbers, emails, or
+    chat IDs; anything else is refused.
+  `tool_check_db_access` reports the active policy.
 - Full Disk Access is broader than Messages access. Grant it only to MCP clients
   you trust and review the destination before approving a send.
 

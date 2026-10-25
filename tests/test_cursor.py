@@ -16,7 +16,7 @@ import re
 
 import pytest
 
-from mac_messages_mcp import messages
+from mac_messages_mcp import messages, read
 from mac_messages_mcp.messages import (
     fuzzy_search_messages,
     get_recent_messages,
@@ -52,8 +52,8 @@ def fake_clock(monkeypatch):
         state["sleeps"].append(seconds)
         state["now"] += seconds
 
-    monkeypatch.setattr(messages.time, "monotonic", monotonic)
-    monkeypatch.setattr(messages.time, "sleep", sleep)
+    monkeypatch.setattr(read.time, "monotonic", monotonic)
+    monkeypatch.setattr(read.time, "sleep", sleep)
     return state
 
 

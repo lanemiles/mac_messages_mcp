@@ -87,10 +87,10 @@ def test_round_trip_preserves_datetime():
 # pure-helper unit tests might miss in integration.
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
-@patch("mac_messages_mcp.messages.get_contact_name", return_value="Alice")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.contacts.get_contact_name", return_value="Alice")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_known_apple_ns_renders_expected_year(mock_query, *_):
     mock_query.return_value = [
         {
@@ -109,10 +109,10 @@ def test_known_apple_ns_renders_expected_year(mock_query, *_):
     assert "2024-01-1" in result  # tolerant of TZ shifting day
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
-@patch("mac_messages_mcp.messages.get_contact_name", return_value="Alice")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.contacts.get_contact_name", return_value="Alice")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_seconds_format_row_renders_expected_year(mock_query, *_):
     """Older chat.db rows store seconds-since-2001 (<= 10 digits)."""
     mock_query.return_value = [
@@ -135,9 +135,9 @@ def test_seconds_format_row_renders_expected_year(mock_query, *_):
 # surface in tests asserting only SQL structure.
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_window_param_is_apple_ns_within_tolerance(mock_query, *_):
     """The first param should be an Apple-ns string for roughly (now - hours)."""
     mock_query.return_value = []
@@ -160,9 +160,9 @@ def test_window_param_is_apple_ns_within_tolerance(mock_query, *_):
     assert cutoff_ns <= expected_high + 10**9, f"cutoff {cutoff_ns} too large"
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_zero_hours_omits_time_window(mock_query, *_):
     """The hours=0 ('all time') branch must not emit a time cutoff."""
     mock_query.return_value = []

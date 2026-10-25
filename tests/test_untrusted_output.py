@@ -241,13 +241,13 @@ def _is_fenced_string(value: str) -> bool:
 # Metadata injection through the public renderer. Body-only must not pass.
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
 @patch(
-    "mac_messages_mcp.messages.get_chat_mapping",
+    "mac_messages_mcp.chats.get_chat_mapping",
     return_value={"room-example": f"Example Group\n{_FORGED_LINE}"},
 )
-@patch("mac_messages_mcp.messages.get_contact_name", return_value="Example Sender")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.contacts.get_contact_name", return_value="Example Sender")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_newline_in_group_display_name_does_not_forge_line(mock_query, *_):
     mock_query.return_value = [
         _message_row(cache_roomnames="room-example", text="example-body"),
@@ -261,13 +261,13 @@ def test_newline_in_group_display_name_does_not_forge_line(mock_query, *_):
     assert "\n" + _FORGED_LINE not in result
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
 @patch(
-    "mac_messages_mcp.messages.get_contact_name",
+    "mac_messages_mcp.contacts.get_contact_name",
     return_value=f"Example Sender\n{_FORGED_LINE}",
 )
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_newline_in_sender_label_does_not_forge_line(mock_query, *_):
     mock_query.return_value = [_message_row(text="example-body")]
     result = get_recent_messages(hours=24)
@@ -275,8 +275,8 @@ def test_newline_in_sender_label_does_not_forge_line(mock_query, *_):
     assert "Example Sender\\n" in _inner(result)
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_newline_in_attachment_filename_and_mime(mock_query, mock_atts):
     mock_query.return_value = [_message_row(text="example-body")]
     mock_atts.return_value = {
@@ -289,9 +289,9 @@ def test_newline_in_attachment_filename_and_mime(mock_query, mock_atts):
         ],
     }
     with (
-        patch("mac_messages_mcp.messages.get_chat_mapping", return_value={}),
+        patch("mac_messages_mcp.chats.get_chat_mapping", return_value={}),
         patch(
-            "mac_messages_mcp.messages.get_contact_name",
+            "mac_messages_mcp.contacts.get_contact_name",
             return_value="Example Sender",
         ),
     ):
@@ -302,10 +302,10 @@ def test_newline_in_attachment_filename_and_mime(mock_query, mock_atts):
     assert "invite.jpg\\n" in inner
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
-@patch("mac_messages_mcp.messages.get_contact_name", return_value="Example Sender")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.contacts.get_contact_name", return_value="Example Sender")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_zwsp_in_body_stays_escaped_in_tool_output(mock_query, *_):
     mock_query.return_value = [_message_row(text="visible\u200bpayload")]
     result = get_recent_messages(hours=24)
@@ -314,10 +314,10 @@ def test_zwsp_in_body_stays_escaped_in_tool_output(mock_query, *_):
     assert "\u200b" not in inner
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
-@patch("mac_messages_mcp.messages.get_contact_name", return_value="Example Sender")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.contacts.get_contact_name", return_value="Example Sender")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_variation_selectors_and_unicode_tags_in_body(mock_query, *_):
     mock_query.return_value = [_message_row(text="mark\U000e0100tag\U000e0061end")]
     result = get_recent_messages(hours=24)
@@ -328,20 +328,20 @@ def test_variation_selectors_and_unicode_tags_in_body(mock_query, *_):
     assert "\U000e0061" not in inner
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
-@patch("mac_messages_mcp.messages.get_contact_name", return_value="Example Sender")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.contacts.get_contact_name", return_value="Example Sender")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_body_only_sanitize_is_not_the_boundary(mock_query, *_):
     """If only the body helper ran, unsanitized sender metadata must still fail."""
     mock_query.return_value = [_message_row(text="example-body")]
     with (
         patch(
-            "mac_messages_mcp.messages.get_contact_name",
+            "mac_messages_mcp.contacts.get_contact_name",
             return_value=f"Example Sender\n{_FORGED_LINE}",
         ),
         patch(
-            "mac_messages_mcp.messages._sanitize_message_body",
+            "mac_messages_mcp.read._sanitize_message_body",
             side_effect=lambda text, *_sanitize_args, **_sanitize_kwargs: text,
         ),
     ):
@@ -350,23 +350,23 @@ def test_body_only_sanitize_is_not_the_boundary(mock_query, *_):
     assert UNTRUSTED_OPEN in result
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
-@patch("mac_messages_mcp.messages.get_contact_name", return_value="Example Sender")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.contacts.get_contact_name", return_value="Example Sender")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_attacker_fence_lookalike_body_is_reserialized(mock_query, *_):
     mock_query.return_value = [_message_row(text=_attacker_fenced_lookalike())]
     result = get_recent_messages(hours=24)
     _assert_lookalike_sealed(result)
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
 @patch(
-    "mac_messages_mcp.messages.get_chat_mapping",
+    "mac_messages_mcp.chats.get_chat_mapping",
     return_value={"room-example": f"Example Group\n{_FORGED_LINE}"},
 )
-@patch("mac_messages_mcp.messages.get_contact_name", return_value="Example Sender")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.contacts.get_contact_name", return_value="Example Sender")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_fuzzy_search_group_name_newline(mock_query, *_):
     mock_query.return_value = [
         _message_row(
@@ -380,10 +380,10 @@ def test_fuzzy_search_group_name_newline(mock_query, *_):
 
 
 @patch(
-    "mac_messages_mcp.messages.get_contact_name",
+    "mac_messages_mcp.contacts.get_contact_name",
     return_value=f"Example Sender\n{_FORGED_LINE}",
 )
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_search_attachments_sender_mime_filename(mock_query, *_):
     mock_query.return_value = [
         {
@@ -410,7 +410,7 @@ def test_search_attachments_sender_mime_filename(mock_query, *_):
     assert "Example Sender\\n" in inner
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_get_attachment_path_and_filename(mock_query, tmp_path):
     forged = tmp_path / "example.bin"
     mock_query.return_value = [
@@ -438,7 +438,7 @@ def test_get_attachment_path_and_filename(mock_query, tmp_path):
     assert "\\n" in inner
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_get_attachment_keeps_image_bytes(mock_query):
     from mcp.server.fastmcp import Image
 
@@ -473,7 +473,7 @@ def test_get_attachment_keeps_image_bytes(mock_query):
 
 
 @patch(
-    "mac_messages_mcp.server.query_messages_db",
+    "mac_messages_mcp.db.query_messages_db",
     return_value=[
         {
             "display_name": f"Example Group\n{_FORGED_LINE}",
@@ -506,10 +506,10 @@ def test_tool_find_contact_name(*_):
     assert "example-handle" in result
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
-@patch("mac_messages_mcp.messages.get_contact_name", return_value="Example Sender")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.contacts.get_contact_name", return_value="Example Sender")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_recent_resource_uses_same_boundary(mock_query, *_):
     mock_query.return_value = [_message_row(text="resource-body\u200bhidden")]
     result = get_recent_messages_resource(hours=24)

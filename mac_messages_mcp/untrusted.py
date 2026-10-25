@@ -99,19 +99,28 @@ def _escape_untrusted_char(ch: str) -> str:
     return ch
 
 
-def neutralize_untrusted_text(text: Any, max_chars: int = 0) -> str:
+def neutralize_untrusted_text(
+    text: Any, max_chars: int = 0, *, keep_newlines: bool = False
+) -> str:
     r"""Serialize untrusted text for a single logical line.
 
     Embedded newlines/CRs become the two-character sequence ``\n``. Other
     ASCII controls, Unicode format characters (except ZWJ), bidi overrides,
     Variation Selectors Supplement, and Unicode tags become ``\uXXXX`` /
     ``\UXXXXXXXX`` escapes. Real emoji, including ZWJ sequences, stay intact.
+
+    ``keep_newlines=True`` leaves real newlines in place for a value that is
+    about to be JSON-encoded, where the encoder escapes them itself; the fence
+    around the whole payload still never contains a raw newline.
     """
     if text is None:
         return ""
 
     normalized = str(text).replace("\r\n", "\n").replace("\r", "\n")
-    cleaned = "".join(_escape_untrusted_char(ch) for ch in normalized)
+    cleaned = "".join(
+        ch if (keep_newlines and ch == "\n") else _escape_untrusted_char(ch)
+        for ch in normalized
+    )
 
     if 0 < max_chars < len(cleaned):
         omitted = len(cleaned) - max_chars

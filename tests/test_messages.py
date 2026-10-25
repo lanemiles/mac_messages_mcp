@@ -229,8 +229,8 @@ def test_long_messages_are_truncated():
 # Tests for _send_message_to_recipient escaping
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
-@patch("mac_messages_mcp.messages.run_applescript")
+@patch("mac_messages_mcp.db.query_messages_db")
+@patch("mac_messages_mcp.applescript.run_applescript")
 def test_does_not_raise_name_error(mock_applescript, mock_query_db):
     """Test that safe_recipient is defined (was NameError after merge)."""
     # Setup mocks: AppleScript accepts the send, and chat.db shows it
@@ -254,8 +254,8 @@ def test_does_not_raise_name_error(mock_applescript, mock_query_db):
     assert "sent successfully" in result
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
-@patch("mac_messages_mcp.messages.run_applescript")
+@patch("mac_messages_mcp.db.query_messages_db")
+@patch("mac_messages_mcp.applescript.run_applescript")
 def test_recipient_with_quotes_is_escaped(mock_applescript, mock_query_db):
     """Test that quotes in recipient don't break the AppleScript command."""
     # Setup mocks
@@ -288,8 +288,8 @@ def test_recipient_with_quotes_is_escaped(mock_applescript, mock_query_db):
 # match instead of just grabbing whatever is newest.
 
 
-@patch("mac_messages_mcp.messages.time")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.send.time")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_matches_own_message_among_concurrent_sends(mock_query_db, mock_time):
     # Two sends to the same handle landed in chat.db between when this
     # call started polling and now; only the second one is this call's.
@@ -321,8 +321,8 @@ def test_matches_own_message_among_concurrent_sends(mock_query_db, mock_time):
     assert row["guid"] == "guid-1"
 
 
-@patch("mac_messages_mcp.messages.time")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.send.time")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_falls_back_to_latest_row_when_no_body_matches(
     mock_query_db,
     mock_time,
@@ -348,8 +348,8 @@ def test_falls_back_to_latest_row_when_no_body_matches(
     assert row["guid"] == "guid-1"
 
 
-@patch("mac_messages_mcp.messages.time")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.send.time")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_no_message_text_preserves_latest_row_behavior(
     mock_query_db,
     mock_time,
@@ -439,7 +439,7 @@ def test_phone_formatter_accepts_legitimate_national_and_e164_numbers():
         assert _format_phone_for_messages("+33639980001") == "+33639980001"
 
 
-@patch("mac_messages_mcp.messages._send_message_to_recipient")
+@patch("mac_messages_mcp.send._send_message_to_recipient")
 def test_send_message_rejects_locally_dialable_form(mock_send):
     """Report the guard error instead of dispatching a half-typed number."""
     with region_pinned("US"):
@@ -449,7 +449,7 @@ def test_send_message_rejects_locally_dialable_form(mock_send):
     mock_send.assert_not_called()
 
 
-@patch("mac_messages_mcp.messages._send_message_to_recipient")
+@patch("mac_messages_mcp.send._send_message_to_recipient")
 def test_send_message_normalizes_bare_digits_before_dispatch(mock_send):
     mock_send.return_value = "sent"
 
@@ -465,7 +465,7 @@ def test_send_message_normalizes_bare_digits_before_dispatch(mock_send):
     )
 
 
-@patch("mac_messages_mcp.messages._send_message_to_recipient")
+@patch("mac_messages_mcp.send._send_message_to_recipient")
 def test_send_message_rejects_short_phone_numbers(mock_send):
     with region_pinned("US"):
         result = send_message("12345", "hello")
@@ -474,12 +474,12 @@ def test_send_message_rejects_short_phone_numbers(mock_send):
     mock_send.assert_not_called()
 
 
-@patch("mac_messages_mcp.messages.get_cached_contacts")
+@patch("mac_messages_mcp.contacts.get_cached_contacts")
 def test_find_contact_returns_messages_ready_phone_number(mock_contacts):
     # The contacts map is keyed on canonical E.164 form.
     mock_contacts.return_value = {"+19565179045": "Hugo Example"}
     with patch.dict(
-        "mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP",
+        "mac_messages_mcp.contacts._PHONE_TO_DETAILS_MAP",
         {
             "+19565179045": {
                 "first_name": "Hugo",
@@ -509,30 +509,30 @@ _HUNT_CONTACTS = {
 }
 
 
-@patch("mac_messages_mcp.messages.get_cached_contacts")
+@patch("mac_messages_mcp.contacts.get_cached_contacts")
 def test_find_contact_exact_name_outranks_lookalikes(mock_contacts):
     """An exact full-name hit is not ambiguous against names that merely resemble it."""
     mock_contacts.return_value = _WHITE_CONTACTS
-    with patch.dict("mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP", {}, clear=True):
+    with patch.dict("mac_messages_mcp.contacts._PHONE_TO_DETAILS_MAP", {}, clear=True):
         matches = find_contact_by_name("emma  white")
 
     assert [m["phone"] for m in matches] == ["+18435406006"]
 
 
-@patch("mac_messages_mcp.messages.get_cached_contacts")
+@patch("mac_messages_mcp.contacts.get_cached_contacts")
 def test_find_contact_partial_name_keeps_fuzzy_list(mock_contacts):
     """A partial query has no exact hit and still returns every candidate."""
     mock_contacts.return_value = _WHITE_CONTACTS
-    with patch.dict("mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP", {}, clear=True):
+    with patch.dict("mac_messages_mcp.contacts._PHONE_TO_DETAILS_MAP", {}, clear=True):
         matches = find_contact_by_name("White")
 
     assert len(matches) >= 2
 
 
-@patch("mac_messages_mcp.messages.get_cached_contacts")
+@patch("mac_messages_mcp.contacts.get_cached_contacts")
 def test_find_contact_exact_name_keeps_all_handles_of_that_person(mock_contacts):
     mock_contacts.return_value = _HUNT_CONTACTS
-    with patch.dict("mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP", {}, clear=True):
+    with patch.dict("mac_messages_mcp.contacts._PHONE_TO_DETAILS_MAP", {}, clear=True):
         matches = find_contact_by_name("Andrew Hunt")
 
     assert {m["phone"] for m in matches} == {
@@ -542,13 +542,13 @@ def test_find_contact_exact_name_keeps_all_handles_of_that_person(mock_contacts)
     }
 
 
-@patch("mac_messages_mcp.messages._send_message_to_recipient", return_value="sent")
-@patch("mac_messages_mcp.messages.get_cached_contacts")
+@patch("mac_messages_mcp.send._send_message_to_recipient", return_value="sent")
+@patch("mac_messages_mcp.contacts.get_cached_contacts")
 def test_send_to_one_person_with_several_handles_uses_phone(mock_contacts, mock_send):
     """Phone + email handles of one contact are not a disambiguation question."""
     mock_contacts.return_value = _HUNT_CONTACTS
     with (
-        patch.dict("mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP", {}, clear=True),
+        patch.dict("mac_messages_mcp.contacts._PHONE_TO_DETAILS_MAP", {}, clear=True),
         region_pinned("US"),
     ):
         result = send_message("Andrew Hunt", "hello")
@@ -557,9 +557,9 @@ def test_send_to_one_person_with_several_handles_uses_phone(mock_contacts, mock_
     assert mock_send.call_args.args[0] == "+15038638650"
 
 
-@patch("mac_messages_mcp.messages.query_messages_db", return_value=[])
-@patch("mac_messages_mcp.messages.find_handles_by_phone", return_value=[11])
-@patch("mac_messages_mcp.messages.get_cached_contacts")
+@patch("mac_messages_mcp.db.query_messages_db", return_value=[])
+@patch("mac_messages_mcp.contacts.find_handles_by_phone", return_value=[11])
+@patch("mac_messages_mcp.contacts.get_cached_contacts")
 def test_read_one_person_with_several_handles_unions_them(
     mock_contacts,
     mock_phone_handles,
@@ -570,7 +570,7 @@ def test_read_one_person_with_several_handles_unions_them(
     mock_contacts.return_value = _HUNT_CONTACTS
     # Each email handle resolves to its own ROWID; the phone to 11.
     mock_query.side_effect = [[{"ROWID": 22}], [{"ROWID": 33}]]
-    with patch.dict("mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP", {}, clear=True):
+    with patch.dict("mac_messages_mcp.contacts._PHONE_TO_DETAILS_MAP", {}, clear=True):
         handle_ids, chat_row_id, _, _, error = _resolve_message_scope(
             "Andrew Hunt",
             None,
@@ -581,12 +581,12 @@ def test_read_one_person_with_several_handles_unions_them(
     assert sorted(handle_ids) == [11, 22, 33]
 
 
-@patch("mac_messages_mcp.messages.get_cached_contacts")
+@patch("mac_messages_mcp.contacts.get_cached_contacts")
 def test_read_two_different_people_still_prompts(mock_contacts):
     from mac_messages_mcp.messages import _resolve_message_scope
 
     mock_contacts.return_value = _WHITE_CONTACTS
-    with patch.dict("mac_messages_mcp.messages._PHONE_TO_DETAILS_MAP", {}, clear=True):
+    with patch.dict("mac_messages_mcp.contacts._PHONE_TO_DETAILS_MAP", {}, clear=True):
         handle_ids, _, _, _, error = _resolve_message_scope("White", None)
 
     assert handle_ids is None
@@ -597,8 +597,8 @@ def test_read_two_different_people_still_prompts(mock_contacts):
 # Tests for temp file race condition fix in _send_message_to_recipient
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
-@patch("mac_messages_mcp.messages.run_applescript")
+@patch("mac_messages_mcp.db.query_messages_db")
+@patch("mac_messages_mcp.applescript.run_applescript")
 def test_temp_file_uses_unique_name(mock_applescript, mock_query_db):
     """Test that temp file gets a unique name (not hardcoded imessage_tmp.txt)."""
     mock_applescript.return_value = ""
@@ -626,8 +626,8 @@ def test_temp_file_uses_unique_name(mock_applescript, mock_query_db):
     ), f"Expected temp directory path in script, got: {script[:200]}"
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
-@patch("mac_messages_mcp.messages.run_applescript")
+@patch("mac_messages_mcp.db.query_messages_db")
+@patch("mac_messages_mcp.applescript.run_applescript")
 def test_temp_file_cleaned_up_on_success(mock_applescript, mock_query_db):
     """Test that temp file is removed after successful send."""
     mock_applescript.return_value = ""
@@ -653,7 +653,7 @@ def test_temp_file_cleaned_up_on_success(mock_applescript, mock_query_db):
     assert len(leaked) == 0, f"Temp files leaked: {leaked}"
 
 
-@patch("mac_messages_mcp.messages.run_applescript")
+@patch("mac_messages_mcp.applescript.run_applescript")
 def test_temp_file_cleaned_up_on_error(mock_applescript):
     """Test that temp file is removed even when AppleScript fails."""
     mock_applescript.return_value = "Error: some failure"
@@ -670,8 +670,8 @@ def test_temp_file_cleaned_up_on_error(mock_applescript):
     assert len(leaked) == 0, f"Temp files leaked: {leaked}"
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
-@patch("mac_messages_mcp.messages.run_applescript")
+@patch("mac_messages_mcp.db.query_messages_db")
+@patch("mac_messages_mcp.applescript.run_applescript")
 def test_temp_file_is_owner_only(mock_applescript, mock_query_db):
     """Mkstemp must create the message file as 0o600 before AppleScript reads it."""
     import re
@@ -709,8 +709,8 @@ def test_temp_file_is_owner_only(mock_applescript, mock_query_db):
 
 
 @patch.dict(os.environ, {}, clear=False)
-@patch("mac_messages_mcp.messages.subprocess.run")
-@patch("mac_messages_mcp.messages.query_addressbook_db")
+@patch("mac_messages_mcp.contacts.subprocess.run")
+@patch("mac_messages_mcp.contacts.query_addressbook_db")
 def test_db_error_returns_empty_without_shell(mock_query, mock_run):
     os.environ.pop("USE_TEST_DATA", None)
     mock_query.return_value = [{"error": "Cannot access AddressBook database"}]
@@ -724,7 +724,7 @@ def test_db_error_returns_empty_without_shell(mock_query, mock_run):
 # Tests for get_chat_mapping error handling
 
 
-@patch("mac_messages_mcp.messages.get_messages_db_path")
+@patch("mac_messages_mcp.db.get_messages_db_path")
 def test_returns_mapping(mock_path):
     """Test happy path returns dict of room_name -> display_name."""
     # Setup - create a temp DB with the expected schema
@@ -748,7 +748,7 @@ def test_returns_mapping(mock_path):
         pathlib.Path(db_path).unlink()
 
 
-@patch("mac_messages_mcp.messages.get_messages_db_path")
+@patch("mac_messages_mcp.db.get_messages_db_path")
 def test_inaccessible_db_returns_empty_dict(mock_path):
     """Test that inaccessible database returns empty dict instead of crashing."""
     # Setup
@@ -761,7 +761,7 @@ def test_inaccessible_db_returns_empty_dict(mock_path):
     assert not result
 
 
-@patch("mac_messages_mcp.messages.get_messages_db_path")
+@patch("mac_messages_mcp.db.get_messages_db_path")
 def test_empty_table_returns_empty_dict(mock_path):
     """Test that empty chat table returns empty dict."""
     # Setup
@@ -786,7 +786,7 @@ def test_empty_table_returns_empty_dict(mock_path):
 # Tests for group chat filtering in get_recent_messages.
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_find_chat_by_identifier_accepts_short_chat_id(mock_query):
     mock_query.return_value = [
         {
@@ -806,14 +806,14 @@ def test_find_chat_by_identifier_accepts_short_chat_id(mock_query):
     assert "iMessage;-;chat123" in params
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
-@patch("mac_messages_mcp.messages.get_contact_name", return_value="Alice")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.contacts.get_contact_name", return_value="Alice")
 @patch(
-    "mac_messages_mcp.messages._find_chat_by_identifier",
+    "mac_messages_mcp.chats._find_chat_by_identifier",
     return_value={"ROWID": 7, "display_name": "Family", "style": 43},
 )
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_get_recent_messages_filters_by_chat_id(mock_query, *_):
     mock_query.return_value = [
         {
@@ -829,25 +829,29 @@ def test_get_recent_messages_filters_by_chat_id(mock_query, *_):
 
     result = get_recent_messages(hours=24, chat_id="chat123")
 
-    sql, params = mock_query.call_args[0]
-    assert "chat_message_join" in sql
-    assert 7 in params
+    # The page query carries the chat filter; later calls on the same mock
+    # resolve sender names, so look for it rather than at the last call.
+    page_calls = [
+        c.args for c in mock_query.call_args_list if "chat_message_join" in c.args[0]
+    ]
+    assert page_calls, [c.args[0][:60] for c in mock_query.call_args_list]
+    assert any(7 in params for _sql, params in page_calls)
     assert "[Family]" in result
     assert "group hello" in result
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
-@patch("mac_messages_mcp.messages.get_contact_name", return_value="Poke")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.contacts.get_contact_name", return_value="Poke")
 @patch(
-    "mac_messages_mcp.messages._find_chat_by_identifier",
+    "mac_messages_mcp.chats._find_chat_by_identifier",
     return_value={
         "ROWID": 2264,
         "display_name": "Poke",
         "style": 45,
     },
 )
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_business_chat_gets_no_name_prefix(mock_query, *_):
     """1:1/business chats (style 45) must not prefix lines with [Name]."""
     mock_query.return_value = [
@@ -1120,7 +1124,7 @@ def test_candidate_handles_us_number():
 # Tests for find_handles_by_phone matching a phone number to stored handle ids.
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_e164_input_matches_handle_stored_as_e164(mock_query_db):
     """An E.164 input searches for the E.164 spelling the handle is stored under."""
     mock_query_db.return_value = [{"ROWID": 1}]
@@ -1134,7 +1138,7 @@ def test_e164_input_matches_handle_stored_as_e164(mock_query_db):
     assert "+33639980001" in mock_query_db.call_args[0][1]
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_national_input_finds_same_handle_under_configured_region(
     mock_query_db,
 ):
@@ -1151,13 +1155,14 @@ def test_national_input_finds_same_handle_under_configured_region(
     assert "+10639980001" not in searched
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_falls_back_to_canonical_scan_when_indexed_lookup_finds_nothing(
     mock_query_db,
 ):
     """A full-table scan still matches when the indexed lookup misses."""
     mock_query_db.side_effect = [
         [],  # indexed lookup on the predicted variant spellings: no match
+        [{"n": 2, "max_rowid": 4}],  # handle-table fingerprint for the scan cache
         [
             {"ROWID": 3, "id": "0639980001"},  # same number, different spelling
             {"ROWID": 4, "id": "+15555550142"},
@@ -1170,11 +1175,12 @@ def test_falls_back_to_canonical_scan_when_indexed_lookup_finds_nothing(
     assert result == [3]
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_no_match_returns_none(mock_query_db):
     """When no stored handle reduces to the same canonical number, None is returned."""
     mock_query_db.side_effect = [
         [],
+        [{"n": 1, "max_rowid": 4}],  # handle-table fingerprint for the scan cache
         [{"ROWID": 4, "id": "+15555550142"}],
     ]
 
@@ -1192,7 +1198,7 @@ def test_no_match_returns_none(mock_query_db):
 # matching the mixed-case spelling that used to find it.
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_mixed_case_email_matches_lowercase_handle(mock_query_db):
     """A mixed-case address is folded before it reaches the query."""
     mock_query_db.return_value = [
@@ -1206,7 +1212,7 @@ def test_mixed_case_email_matches_lowercase_handle(mock_query_db):
     assert params == ("hugo.example@example.com",)
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_lowercase_email_still_matches_mixed_case_handle(mock_query_db):
     """The comparison is folded in the query, so the stored case does not matter."""
     mock_query_db.return_value = [
@@ -1220,8 +1226,8 @@ def test_lowercase_email_still_matches_mixed_case_handle(mock_query_db):
     assert "COLLATE NOCASE" in mock_query_db.call_args[0][0]
 
 
-@patch("mac_messages_mcp.messages.find_contact_by_name")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.contacts.find_contact_by_name")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_address_is_not_routed_through_name_matching(
     mock_query_db,
     mock_find_by_name,
@@ -1269,8 +1275,8 @@ def test_process_contacts_keeps_short_code_entry():
     assert contacts_map.get("55501") == "Hugo Example"
 
 
-@patch("mac_messages_mcp.messages.get_cached_contacts")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.contacts.get_cached_contacts")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_get_contact_name_resolves_short_code_handle(
     mock_query_db,
     mock_contacts,
@@ -1318,7 +1324,7 @@ def test_store_caps_to_displayed_entries():
     assert len(get_recent_contact_matches()) == 10
 
 
-@patch("mac_messages_mcp.messages._send_message_to_recipient")
+@patch("mac_messages_mcp.send._send_message_to_recipient")
 def test_send_message_resolves_shared_store_selector(mock_send):
     mock_send.return_value = "sent"
     set_recent_contact_matches(
@@ -1340,7 +1346,7 @@ def test_send_message_resolves_shared_store_selector(mock_send):
 # contact= falls back to chat.display_name for named non-AddressBook chats.
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_find_chat_by_display_name_exact_match(mock_query):
     mock_query.return_value = [
         {
@@ -1357,13 +1363,13 @@ def test_find_chat_by_display_name_exact_match(mock_query):
     assert params == ("poke",)
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_find_chat_by_display_name_no_match(mock_query):
     mock_query.return_value = []
     assert _find_chat_by_display_name("Nobody") is None
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_find_chat_by_display_name_ambiguous(mock_query):
     mock_query.return_value = [
         {"ROWID": 1, "display_name": "Fam", "chat_identifier": "chat1"},
@@ -1387,10 +1393,10 @@ def test_replacement_chars_detected():
     assert not _is_attachment_placeholder_body(None)
 
 
-@patch("mac_messages_mcp.messages._attachments_for_message_ids", return_value={})
-@patch("mac_messages_mcp.messages.get_chat_mapping", return_value={})
-@patch("mac_messages_mcp.messages.get_contact_name", return_value="Poke")
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.attachments._attachments_for_message_ids", return_value={})
+@patch("mac_messages_mcp.chats.get_chat_mapping", return_value={})
+@patch("mac_messages_mcp.contacts.get_contact_name", return_value="Poke")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_recent_renders_attachment_placeholder(mock_query, *_):
     mock_query.return_value = [
         {

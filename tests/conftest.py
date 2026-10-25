@@ -10,12 +10,41 @@ from __future__ import annotations
 
 import pytest
 
-from mac_messages_mcp import messages
+from mac_messages_mcp import contacts, db, messages, policy, read, search_index
 
 from .chatdb import AddressBookDb, ChatDb
 
 # Captured before any fixture stubs it, so address_book can restore the real one.
-_REAL_GET_CACHED_CONTACTS = messages.get_cached_contacts
+_REAL_GET_CACHED_CONTACTS = contacts.get_cached_contacts
+
+
+@pytest.fixture(autouse=True)
+def _reset_process_caches(monkeypatch, tmp_path_factory):
+    """Caches are keyed by database path; tests reuse paths and handle ROWIDs.
+
+    Attachment tests send files from pytest's temp directory, so that root is
+    allowed by default here; the policy tests override it explicitly.
+    """
+    contacts.clear_handle_name_cache()
+    db.close_cached_connections()
+    policy.reset_send_budget()
+    read._MESSAGE_COLUMNS_CACHE.clear()
+    monkeypatch.setenv(
+        "MAC_MESSAGES_ATTACHMENT_ROOTS", str(tmp_path_factory.getbasetemp())
+    )
+    monkeypatch.setenv("MAC_MESSAGES_SCHEDULE_STORE", "none")
+    monkeypatch.setenv("MAC_MESSAGES_SEARCH_INDEX", "none")
+    search_index.reset()
+    for var in (
+        "MAC_MESSAGES_READ_ONLY",
+        "MAC_MESSAGES_REQUIRE_CONFIRM",
+        "MAC_MESSAGES_MAX_SENDS_PER_HOUR",
+        "MAC_MESSAGES_ALLOWED_RECIPIENTS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    yield
+    contacts.clear_handle_name_cache()
+    db.close_cached_connections()
 
 
 @pytest.fixture(scope="session")
@@ -33,25 +62,27 @@ def chat_db(tmp_path, monkeypatch, _chat_db_template):
     Contacts default to empty so senders render as their handle id; request
     ``address_book`` as well to resolve names through the real AddressBook SQL.
     """
-    db = ChatDb(tmp_path / "chat.db", template=_chat_db_template)
-    monkeypatch.setattr(messages, "get_messages_db_path", lambda: str(db.path))
-    monkeypatch.setattr(messages, "get_cached_contacts", dict)
-    yield db
-    db.close()
+    database = ChatDb(tmp_path / "chat.db", template=_chat_db_template)
+    monkeypatch.setattr(db, "get_messages_db_path", lambda: str(database.path))
+    monkeypatch.setattr(contacts, "get_cached_contacts", dict)
+    yield database
+    database.close()
 
 
 @pytest.fixture
 def address_book(tmp_path, monkeypatch, chat_db):
     """A schema-faithful AddressBook the real contact-loading SQL runs against."""
-    db = AddressBookDb(tmp_path / "AddressBook-v22.abcddb")
+    database = AddressBookDb(tmp_path / "AddressBook-v22.abcddb")
     monkeypatch.setattr(
-        messages, "_addressbook_db_paths", lambda: ([str(db.path)], str(db.path))
+        contacts,
+        "_addressbook_db_paths",
+        lambda: ([str(database.path)], str(database.path)),
     )
     # Undo chat_db's empty-contacts stub and drop the process-level cache so
     # this test's contacts are what the lookup sees.
-    monkeypatch.setattr(messages, "get_cached_contacts", _REAL_GET_CACHED_CONTACTS)
-    monkeypatch.setattr(messages, "_CONTACTS_CACHE", None)
-    monkeypatch.setattr(messages, "_LAST_CACHE_UPDATE", 0)
-    monkeypatch.setattr(messages, "_PHONE_TO_DETAILS_MAP", {})
-    yield db
-    db.close()
+    monkeypatch.setattr(contacts, "get_cached_contacts", _REAL_GET_CACHED_CONTACTS)
+    monkeypatch.setattr(contacts, "_CONTACTS_CACHE", None)
+    monkeypatch.setattr(contacts, "_LAST_CACHE_UPDATE", 0)
+    monkeypatch.setattr(contacts, "_PHONE_TO_DETAILS_MAP", {})
+    yield database
+    database.close()

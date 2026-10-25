@@ -42,13 +42,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `confirm=true`, which asks the human through MCP elicitation and sends nothing
   when the client does not implement elicitation.
 - `tool_create_contact` creates one Contacts.app entry with a phone number.
+- `tool_fuzzy_search_messages` consults a local full-text index first
+  (`mac_messages_mcp/search_index.py`, SQLite FTS5 in a private file under
+  `~/Library/Application Support/mac-messages-mcp/`; `MAC_MESSAGES_SEARCH_INDEX`
+  overrides the path, `none` disables). The index is built from decoded message
+  bodies once and then updated only for ROWIDs above the last one indexed, so a
+  search over all history is fast and complete; the fuzzy pass still ranks the
+  hits. Previously the search scanned only the newest few thousand candidate
+  rows and, because modern macOS stores most bodies only in `attributedBody`
+  where SQL cannot filter them, silently missed anything older.
+  `tool_check_db_access` reports the index size.
+- Reads surface the details chat.db records but used to drop or flatten:
+  tapbacks quote what they reacted to (`[tapback: loved → "Dinner at…"]`,
+  including custom-emoji tapbacks), replies quote the original
+  (`[reply to: "…"]`), edited messages are tagged `[edited]`, unsent messages
+  appear as `[unsent]: (unsent message)` instead of vanishing, audio messages
+  and link previews are tagged, other iMessage-app balloons show `[app: …]`,
+  group events render as `[event]: Alice named the group "Trip"` / `added Bob`
+  / `left the group` instead of being skipped, and sent messages show
+  `[read 09:12]` or `[delivered 09:20]` receipts. JSON output carries
+  `tapback`, `reply_to`, `edited_at`, `unsent_at`, `is_audio`, `link_preview`,
+  `app_bundle`, `event`, `delivered_at`, and `read_at`. Optional columns are
+  probed once per database, so an older macOS without them still reads.
+- Message lines say who an outbound message went to: `You → Alice` on a 1:1
+  thread (the counterpart handle on the row), plain `You` in a group. Group
+  chats without a name, which is most of them, are labelled by participants:
+  `[group: Alice, Bob, Carol +2]`; named groups keep `[Family]`. JSON output
+  carries `to` and a `chat` object (id, name, kind, participants).
+- `tool_get_chats` lists every group chat, naming unnamed ones
+  `(unnamed: Alice, Bob, Carol)`; it used to list only chats with a
+  display name. New `tool_get_chat_participants(chat_id)` lists a chat's
+  members with names and addresses.
+- `format="json"` on `tool_get_recent_messages`, `tool_fuzzy_search_messages`,
+  `tool_list_conversations`, `tool_search_attachments`, and
+  `tool_wait_for_new_messages` returns one JSON object inside the usual
+  untrusted fence: `{"messages": [...], "cursor": {"next_since_rowid": N},
+  "page": {...}}` (or `conversations` / `attachments`), with one field per
+  fact, bodies that round-trip exactly (newlines included), ISO-8601
+  timestamps carrying the Mac's UTC offset, and every string neutralized
+  through the same boundary as text output.
 - `tool_schedule_message`, `tool_list_scheduled_messages`, and
-  `tool_cancel_scheduled_message` manage an in-memory send queue that exists for
-  the lifetime of the server process.
+  `tool_cancel_scheduled_message` manage a send queue that is persisted to
+  `~/Library/Application Support/mac-messages-mcp/scheduled_messages.json`
+  (private file, atomic writes; `MAC_MESSAGES_SCHEDULE_STORE` overrides the
+  path, `none` disables). Pending jobs are reloaded when the server restarts: a
+  job that came due while the server was down is sent if it is within an hour
+  of its send time (and annotated as late), and marked `missed` otherwise; a
+  job interrupted mid-send is marked `failed` rather than risking a duplicate.
 - MCP prompts: `triage_unread_messages`, `summarize_recent_messages`, and
   `draft_reply`.
 
 ### Changed
+- Reads reuse one read-only SQLite connection per thread instead of opening a
+  new one for every query, and resolve every sender on a page with one batched
+  handle lookup (plus one chat-name fallback query) instead of one or two
+  queries per rendered message; resolved names are cached per database until
+  the AddressBook cache refreshes. A miss in the canonical-form handle lookup
+  no longer re-reads and re-canonicalises the whole handle table every time.
+  Measured on a 50-message page: 55 connections and 50 handle queries before,
+  1 connection and 1 handle query after (`tests/test_performance.py`). The
+  chat-name fallback for an unknown sender now ignores group chats, so an
+  unknown number is no longer labelled with a group's name.
+- `mac_messages_mcp.messages` is now a facade over eight focused modules:
+  `applescript` (osascript), `db` (read-only chat.db access, Apple-epoch
+  timestamps, the single date-range builder), `output` (format validation and
+  JSON serialization), `contacts` (AddressBook, fuzzy matching, handle
+  resolution, Contacts.app writes), `chats` (chat lookup, membership,
+  conversation listing), `read` (body decoding, scope resolution, reads,
+  waiting, fuzzy search), `send`, and `attachments`. Every name importable from `messages` before still is.
+  `content.py` now imports from the owning modules instead of private names,
+  attachment and content searches share `db.date_range_clauses`, and
+  `read.list_named_chats` backs both `tool_get_chats` and the CLI.
+  `tests/test_structure.py` pins these boundaries.
 - Contact name resolution prefers an exact name or nickname match, so a query
   such as "Emma White" is no longer reported as ambiguous against look-alike
   names ("Jeremy White", "Alex Whitaker"). When the only remaining matches are
@@ -81,6 +146,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   newest row, sometimes reporting another send's outcome. Verified against a
   real macOS 27 blob, now kept (with its words substituted) in
   `tests/fixtures/attributed_body_sample.hex`.
+- `start_date` / `end_date` filters are interpreted as days in the Mac's local
+  timezone, matching the local timestamps the output shows. They were UTC days,
+  so "messages from the 15th" missed the evening of the 15th anywhere behind
+  UTC. All displayed times now go through one `db.local_timezone()` seam.
 - `tool_list_conversations` labelled every one-to-one thread `[business]`,
   because it mapped `chat.style = 45` to business when 45 is the ordinary 1:1
   style. One-to-one threads are now `[direct]`; `[business]` is reserved for
@@ -92,6 +161,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   An unresolvable scope is now reported at once rather than after the timeout.
 
 ### Security
+- Server-side write policy, configured by environment and enforced inside the
+  send and contact functions (so scheduled sends and direct callers are bound
+  too), documented in `mac_messages_mcp/policy.py`:
+  - `MAC_MESSAGES_ATTACHMENT_ROOTS` limits which folders files may be attached
+    from. Default `~/Desktop:~/Downloads:~/Documents:~/Pictures`; paths are
+    resolved through symlinks, and hidden files or anything under `~/Library`
+    are always refused unless the value is `*`. Previously any file the user
+    could read, `~/.ssh` keys or `chat.db` itself, could be sent to any number.
+  - `MAC_MESSAGES_READ_ONLY=1` leaves the send, schedule, and contact-creation
+    tools unregistered and makes the functions refuse.
+  - `MAC_MESSAGES_REQUIRE_CONFIRM=1` makes `tool_send_message` ask the human
+    through elicitation on every call regardless of its `confirm` argument,
+    and refuses scheduled sends.
+  - `MAC_MESSAGES_MAX_SENDS_PER_HOUR` caps send attempts in a rolling hour.
+  - `MAC_MESSAGES_ALLOWED_RECIPIENTS` restricts sends to listed numbers (any
+    spelling), emails, or chat IDs.
+  `tool_check_db_access` reports the active policy.
+- `tool_send_message` now routes its confirmation-path errors through the
+  untrusted-output boundary like every other result.
 - GitHub Actions workflows now declare read-only `GITHUB_TOKEN` permissions at the workflow level and grant write scopes only on the jobs that upload SARIF, submit SBOMs, comment on PRs, or publish releases.
 - Contact/message text cleaning no longer uses a regex character class spanning U+24C2–U+1F251, which CodeQL flagged as an overly permissive range and which also stripped CJK.
 - The MCPB builder fetches `uv` over HTTPS with an allowlisted redirect host set instead of `urllib.request.urlopen`.

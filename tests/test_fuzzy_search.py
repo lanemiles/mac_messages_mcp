@@ -60,10 +60,10 @@ def _mock_db_and_call(messages, search_term, **kwargs):
     """Call fuzzy_search_messages with mocked DB, return (result, mock_db)."""
     mock_db = MagicMock(return_value=messages)
     with (
-        patch("mac_messages_mcp.messages.query_messages_db", mock_db),
-        patch("mac_messages_mcp.messages.get_chat_mapping", return_value={}),
+        patch("mac_messages_mcp.db.query_messages_db", mock_db),
+        patch("mac_messages_mcp.chats.get_chat_mapping", return_value={}),
         patch(
-            "mac_messages_mcp.messages.get_contact_name",
+            "mac_messages_mcp.contacts.get_contact_name",
             return_value="Test Contact",
         ),
     ):

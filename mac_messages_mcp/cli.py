@@ -29,17 +29,13 @@ from mac_messages_mcp.messages import (
     check_addressbook_access,
     check_messages_db_access,
     find_contact_by_name,
+    format_chat_label,
     fuzzy_search_messages,
     get_cached_contacts,
     get_recent_messages,
-    query_messages_db,
+    list_named_chats,
     search_attachments,
     send_message,
-)
-
-# Mirrors the server's tool_get_chats query: any chat carrying a display name.
-_NAMED_CHATS_QUERY = (
-    "SELECT chat_identifier, display_name FROM chat WHERE display_name IS NOT NULL"
 )
 
 
@@ -115,17 +111,16 @@ def _cmd_contacts(args: argparse.Namespace) -> int:
 
 
 def _cmd_chats(_args: argparse.Namespace) -> int:
-    results = query_messages_db(_NAMED_CHATS_QUERY)
-    if results and "error" in results[0]:
-        print(f"Error accessing chats: {results[0]['error']}")
+    chats = list_named_chats()
+    if chats and "error" in chats[0]:
+        print(f"Error accessing chats: {chats[0]['error']}")
         return 1
-    chats = [row for row in results if row.get("display_name")]
     if not chats:
         print("No named group chats found.")
         return 1
     print("Available group chats:")
     for index, chat in enumerate(chats, 1):
-        print(f"{index}. {chat['display_name']} (ID: {chat['chat_identifier']})")
+        print(f"{index}. {format_chat_label(chat)} (ID: {chat['chat_identifier']})")
     return 0
 
 

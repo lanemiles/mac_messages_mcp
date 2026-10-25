@@ -127,7 +127,7 @@ def test_chats_lists_names_and_ids(capsys):
         {"display_name": "Example Group", "chat_identifier": "chat123"},
         {"display_name": "", "chat_identifier": "chat-empty"},
     ]
-    with patch("mac_messages_mcp.cli.query_messages_db", return_value=rows):
+    with patch("mac_messages_mcp.db.query_messages_db", return_value=rows):
         assert cli.main(["chats"]) == 0
 
     out = capsys.readouterr().out
@@ -137,7 +137,7 @@ def test_chats_lists_names_and_ids(capsys):
 
 def test_chats_database_error_returns_nonzero(capsys):
     rows = [{"error": "unable to open database file"}]
-    with patch("mac_messages_mcp.cli.query_messages_db", return_value=rows):
+    with patch("mac_messages_mcp.db.query_messages_db", return_value=rows):
         assert cli.main(["chats"]) == 1
 
     assert (

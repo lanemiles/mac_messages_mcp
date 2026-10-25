@@ -80,6 +80,38 @@
     {
       "name": "tool_get_attachment",
       "description": "Read-only attachment fetch by database ID, returning inline images when small enough or a local path otherwise."
+    },
+    {
+      "name": "tool_get_chat_participants",
+      "description": "Read-only list of who is in a chat, by name and number; useful for unnamed group chats."
+    },
+    {
+      "name": "tool_list_conversations",
+      "description": "Read-only list of every conversation with kind, counts, unread count, and last activity."
+    },
+    {
+      "name": "tool_wait_for_new_messages",
+      "description": "Read-only bounded poll that returns messages newer than a ROWID cursor, scoped to a contact or chat."
+    },
+    {
+      "name": "tool_search_attachment_contents",
+      "description": "Read-only search inside attachment contents (text, PDF, OCR when available)."
+    },
+    {
+      "name": "tool_create_contact",
+      "description": "Creates one Contacts.app entry with a phone number; a write that needs Automation permission."
+    },
+    {
+      "name": "tool_schedule_message",
+      "description": "Queues a message for later delivery; persisted to disk and sent by this server."
+    },
+    {
+      "name": "tool_list_scheduled_messages",
+      "description": "Read-only list of scheduled messages and their status."
+    },
+    {
+      "name": "tool_cancel_scheduled_message",
+      "description": "Cancels one pending scheduled message."
     }
   ],
   "compatibility": {

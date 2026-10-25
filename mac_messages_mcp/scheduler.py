@@ -1,23 +1,52 @@
 # Copyright (c) 2023 Carter Lasalle
-"""In-process scheduled-send registry for the Messages MCP server.
+"""Scheduled-send registry for the Messages MCP server, persisted to disk.
 
-Scheduled sends live only in memory, for the lifetime of the server
-process. Nothing is persisted to disk: restarting the server discards every
-pending job, and a job scheduled in one process is invisible to any other
-process. This is deliberate -- a scheduler that survives restarts would need
-durable storage, catch-up semantics, and deduplication, none of which this
-module provides.
+Jobs are kept in memory and, when a ``store_path`` is given, mirrored to a
+private JSON file after every change (atomic replace, mode 0600). A new
+scheduler loads that file, so a restart of the server or of the client that
+launches it does not lose pending sends. Jobs that came due while the server
+was down are sent on the next run if they are within ``catch_up_grace_seconds``
+of their send time, and marked ``missed`` otherwise; a job found ``running`` in
+the file was interrupted mid-send and is marked ``failed`` rather than risking
+a duplicate.
+
+``MAC_MESSAGES_SCHEDULE_STORE`` overrides the default store location
+(``~/Library/Application Support/mac-messages-mcp/scheduled_messages.json``);
+``none`` disables persistence.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import math
+import os
 import threading
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
+from pathlib import Path
 
-__all__ = ["ScheduledMessage", "MessageScheduler"]
+__all__ = ["ScheduledMessage", "MessageScheduler", "default_store_path"]
+
+logger = logging.getLogger(__name__)
+
+STORE_ENV_VAR = "MAC_MESSAGES_SCHEDULE_STORE"
+_DEFAULT_STORE = (
+    "~/Library/Application Support/mac-messages-mcp/scheduled_messages.json"
+)
+# Finished jobs older than this are dropped from the file on the next save.
+_TERMINAL_RETENTION_SECONDS = 7 * 24 * 3600.0
+_DEFAULT_GRACE_SECONDS = 3600.0
+
+
+def default_store_path() -> Path | None:
+    """Where the server persists its queue; None when persistence is disabled."""
+    raw = os.environ.get(STORE_ENV_VAR)
+    if raw is not None and raw.strip().lower() in {"none", "off", ""}:
+        return None
+    return Path(raw if raw else _DEFAULT_STORE).expanduser()
+
 
 # Ceiling on simultaneously pending jobs. Scheduling past this raises
 # ValueError so an unbounded caller cannot grow memory without limit.
@@ -43,8 +72,10 @@ class ScheduledMessage:
     send_at: float
     group_chat: bool = False
     attachment_paths: tuple[str, ...] = ()
-    status: str = "pending"  # "pending" | "running" | "sent" | "failed"
+    status: str = "pending"  # "pending" | "running" | "sent" | "failed" | "missed"
     result: str | None = None
+    created_at: float = 0.0
+    finished_at: float | None = None
 
 
 class MessageScheduler:
@@ -61,6 +92,8 @@ class MessageScheduler:
         send: Callable[[ScheduledMessage], str],
         *,
         clock: Callable[[], float] = time.time,
+        store_path: Path | None = None,
+        catch_up_grace_seconds: float = _DEFAULT_GRACE_SECONDS,
     ) -> None:
         self._send = send
         self._clock = clock
@@ -69,6 +102,111 @@ class MessageScheduler:
         self._counter = 0
         self._thread: threading.Thread | None = None
         self._stopping = False
+        self.store_path = Path(store_path) if store_path is not None else None
+        self.catch_up_grace_seconds = float(catch_up_grace_seconds)
+        # Jobs restored from disk; a late send of one of these is annotated so
+        # the listing shows the delivery was delayed by the downtime.
+        self._restored_ids: set[str] = set()
+        if self.store_path is not None:
+            self._load()
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def _load(self) -> None:
+        """Read the store, reconciling jobs that aged while the server was down."""
+        assert self.store_path is not None
+        if not self.store_path.exists():
+            return
+        try:
+            data = json.loads(self.store_path.read_text(encoding="utf-8"))
+            raw_jobs = data["jobs"]
+            if not isinstance(raw_jobs, list):
+                raise ValueError("jobs is not a list")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            corrupt = self.store_path.with_suffix(self.store_path.suffix + ".corrupt")
+            logger.warning(
+                "Scheduled-message store %s is unreadable (%s); setting it aside as %s",
+                self.store_path,
+                exc,
+                corrupt,
+            )
+            try:
+                os.replace(self.store_path, corrupt)
+            except OSError:
+                pass
+            return
+
+        allowed = {f.name for f in fields(ScheduledMessage)}
+        now = self._clock()
+        for raw in raw_jobs:
+            if not isinstance(raw, dict) or "id" not in raw:
+                continue
+            payload = {k: v for k, v in raw.items() if k in allowed}
+            payload["attachment_paths"] = tuple(payload.get("attachment_paths") or ())
+            try:
+                job = ScheduledMessage(**payload)
+            except TypeError:
+                continue
+            self._reconcile_loaded(job, now)
+            self._jobs[job.id] = job
+            if job.status == "pending":
+                self._restored_ids.add(job.id)
+            try:
+                self._counter = max(self._counter, int(job.id.split("-", 1)[1]))
+            except (IndexError, ValueError):
+                pass
+
+    def _reconcile_loaded(self, job: ScheduledMessage, now: float) -> None:
+        if job.status == "running":
+            # Claimed before a crash; whether Messages sent it is unknown, and a
+            # duplicate is worse than a report, so do not retry.
+            job.status = "failed"
+            job.result = "interrupted: the server stopped while this job was sending"
+            job.finished_at = now
+        elif (
+            job.status == "pending" and now - job.send_at > self.catch_up_grace_seconds
+        ):
+            late_minutes = int((now - job.send_at) // 60)
+            job.status = "missed"
+            job.result = (
+                f"server was not running at send time; {late_minutes} minutes "
+                f"past due exceeds the {int(self.catch_up_grace_seconds // 60)}"
+                "-minute catch-up window"
+            )
+            job.finished_at = now
+
+    def _save_locked(self) -> None:
+        """Write the queue atomically; caller holds the condition."""
+        if self.store_path is None:
+            return
+        now = self._clock()
+        keep = [
+            job
+            for job in self._jobs.values()
+            if job.status in ("pending", "running")
+            or job.finished_at is None
+            or now - job.finished_at <= _TERMINAL_RETENTION_SECONDS
+        ]
+        payload = {
+            "version": 1,
+            "jobs": [
+                asdict(job) for job in sorted(keep, key=lambda j: (j.send_at, j.id))
+            ],
+        }
+        try:
+            self.store_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.store_path.with_suffix(self.store_path.suffix + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, self.store_path)
+        except OSError as exc:
+            logger.warning(
+                "Could not persist scheduled messages to %s: %s", self.store_path, exc
+            )
 
     def schedule(
         self,
@@ -115,8 +253,10 @@ class MessageScheduler:
                 send_at=float(send_at),
                 group_chat=group_chat,
                 attachment_paths=attachments,
+                created_at=self._clock(),
             )
             self._jobs[job.id] = job
+            self._save_locked()
             self._condition.notify_all()
             return job
 
@@ -140,6 +280,7 @@ class MessageScheduler:
             if job is None or job.status != "pending":
                 return False
             del self._jobs[job_id]
+            self._save_locked()
             self._condition.notify_all()
             return True
 
@@ -171,6 +312,8 @@ class MessageScheduler:
             due.sort(key=lambda job: (job.send_at, job.id))
             for job in due:
                 job.status = "running"
+            if due:
+                self._save_locked()
             self._condition.notify_all()
             return due
 
@@ -188,12 +331,25 @@ class MessageScheduler:
                 failed = True
             else:
                 failed = False
+            finished = self._clock()
+            lateness = finished - job.send_at
+            if not failed and lateness > 120 and job.id in self._restored_ids:
+                outcome = (
+                    f"{outcome} (sent {int(lateness // 60)} minutes late: the "
+                    "server was not running at send time)"
+                )
             with self._condition:
                 job.status = "failed" if failed else "sent"
                 job.result = outcome
+                job.finished_at = finished
+                self._save_locked()
                 self._condition.notify_all()
             executed.append((job, outcome))
         return executed
+
+    def has_pending(self) -> bool:
+        with self._condition:
+            return any(job.status == "pending" for job in self._jobs.values())
 
     def start(self) -> None:
         """Start the background worker thread.

@@ -28,6 +28,17 @@ data before assuming a lookup result of "no messages" is real:
 1. `tool_check_db_access` — Messages database.
 2. `tool_check_addressbook` — Contacts database.
 
+## Server policy
+
+The server may be configured to refuse writes. If `tool_send_message`,
+`tool_schedule_message`, or `tool_create_contact` are not in the tool list, the
+server runs read-only; do not look for another way to send. A send may also be
+refused because the recipient is not on the server's allowlist, the hourly send
+cap is reached, or an attachment lies outside the allowed folders (by default
+Desktop, Downloads, Documents, Pictures; never hidden files or `~/Library`).
+Report such a refusal to the user instead of retrying with a different path or
+recipient. `tool_check_db_access` prints the active policy.
+
 ## Tool map
 
 | Goal | Tool |
@@ -37,19 +48,20 @@ data before assuming a lookup result of "no messages" is real:
 | Every conversation with kind, counts, and last activity | `tool_list_conversations` |
 | Block until a newer message arrives | `tool_wait_for_new_messages` |
 | Contact name to send-ready number(s) | `tool_find_contact` |
-| Send-ready group chat names and IDs | `tool_get_chats` |
+| Send-ready group chat names and IDs, named or `(unnamed: participants)` | `tool_get_chats` |
+| Who is in a chat, by name and number | `tool_get_chat_participants` |
 | Attachment metadata by date, contact, or MIME type | `tool_search_attachments` |
 | Text inside attachment contents | `tool_search_attachment_contents` |
 | One attachment by ID | `tool_get_attachment` |
 | Whether a recipient is reachable over iMessage | `tool_check_imessage_availability` |
 | Diagnostics: Messages DB, AddressBook, contact count | `tool_check_db_access`, `tool_check_addressbook`, `tool_check_contacts` |
 | Send one message now | `tool_send_message` |
-| Queue a message for later | `tool_schedule_message`, `tool_list_scheduled_messages`, `tool_cancel_scheduled_message` |
+| Queue a message for later (saved to disk, survives restarts) | `tool_schedule_message`, `tool_list_scheduled_messages`, `tool_cancel_scheduled_message` |
 | Create one Contacts entry | `tool_create_contact` |
 
 Read-only: `tool_get_recent_messages`, `tool_fuzzy_search_messages`,
 `tool_list_conversations`, `tool_wait_for_new_messages`, `tool_find_contact`,
-`tool_get_chats`, `tool_search_attachments`, `tool_search_attachment_contents`,
+`tool_get_chats`, `tool_get_chat_participants`, `tool_search_attachments`, `tool_search_attachment_contents`,
 `tool_get_attachment`, the three checks, and `tool_list_scheduled_messages`.
 `tool_send_message` and `tool_schedule_message` send real messages;
 `tool_create_contact` changes Contacts.
@@ -65,7 +77,7 @@ never send anything.
 - `hours` counts back from now; `24` is the default. `hours=0` is not special
   here and returns no rows — use a large value or
   `tool_fuzzy_search_messages(hours=0)` for all-history searches.
-- `start_date` and `end_date` are inclusive `YYYY-MM-DD` (UTC) and replace the
+- `start_date` and `end_date` are inclusive `YYYY-MM-DD` (local timezone) and replace the
   `hours` window.
 - Pass **either** `contact` **or** `chat_id`, never both. `contact` accepts a
   name, an E.164 number, an email address, or a `contact:N` selector from a
@@ -98,6 +110,23 @@ never send anything.
 with its kind (direct, group, business), message count, unread count, and last
 activity. Use it to find a thread ID or to triage unread work; use
 `tool_get_chats` when you only need send-ready group chat IDs.
+
+`tool_get_chat_participants(chat_id, format="text")` lists a chat's members
+with names and numbers; use it to learn who is in an unnamed group before
+reading or sending to it.
+
+Every read tool (`tool_get_recent_messages`, `tool_fuzzy_search_messages`,
+`tool_list_conversations`, `tool_search_attachments`,
+`tool_wait_for_new_messages`, `tool_get_chat_participants`) accepts
+`format="json"` and then returns one JSON object inside the usual untrusted
+fence, with one field per fact (`rowid`, ISO-8601 `date` with the Mac's UTC
+offset, `sender`/`to` with name, handle_id and address, `chat` with id, kind and
+participants for unnamed groups, `body`, `tags`, `attachments`, and a `cursor`).
+Prefer JSON when you will act on individual fields; text when a human reads it.
+
+Message lines show who an outbound message went to (`You → Alice`) for 1:1
+threads, and label group chats `[Family]` when named or
+`[group: Alice, Bob, Carol +2]` when not.
 
 `tool_wait_for_new_messages(since_rowid=0, timeout_seconds=30, poll_interval=1, contact=None, chat_id=None)` is a bounded poll, not a push: it returns
 newer messages or a timeout notice when none arrive (max 300 seconds). A
@@ -184,13 +213,16 @@ reinterpreted.
 
 `tool_schedule_message(recipient, message, send_at, *, group_chat=False, attachment_paths=None)`
 queues one send for later. `send_at` is ISO 8601 (`2026-10-07T09:30:00` or with
-an offset); a value without an offset is local time. The queue is **in
-memory**: it lives only while the server process runs, and a job is lost if the
-client disconnects or the server restarts before `send_at`. Scheduled sends
-perform the same Messages automation as `tool_send_message` with no human
-confirmation, so apply the same confirmation rule. Inspect the queue with
-`tool_list_scheduled_messages` (statuses `pending`, `sent`, `failed`) and drop a
-pending job with `tool_cancel_scheduled_message(job_id)`.
+an offset); a value without an offset is local time. The queue is saved to
+disk and reloaded when the server restarts, so a job survives the client
+disconnecting; a job that comes due while the server is down is sent if the
+server is back within an hour (and annotated as late), and marked `missed`
+otherwise. Scheduled sends perform the same Messages automation as
+`tool_send_message` with no human confirmation, so apply the same confirmation
+rule; a server with `MAC_MESSAGES_REQUIRE_CONFIRM` set refuses them. Inspect
+the queue with `tool_list_scheduled_messages` (statuses `pending`, `sent`,
+`failed`, `missed`) and drop a pending job with
+`tool_cancel_scheduled_message(job_id)`.
 
 ## Creating a contact
 

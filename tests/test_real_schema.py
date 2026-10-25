@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mac_messages_mcp import messages
+from mac_messages_mcp import messages, read
 from mac_messages_mcp.content import search_attachment_contents
 from mac_messages_mcp.messages import (
     _check_imessage_availability,
@@ -56,13 +56,13 @@ def _text(fenced: str) -> str:
 @pytest.fixture
 def fake_clock(monkeypatch):
     state = {"now": 0.0, "sleeps": []}
-    monkeypatch.setattr(messages.time, "monotonic", lambda: state["now"])
+    monkeypatch.setattr(read.time, "monotonic", lambda: state["now"])
 
     def sleep(seconds):
         state["sleeps"].append(seconds)
         state["now"] += seconds
 
-    monkeypatch.setattr(messages.time, "sleep", sleep)
+    monkeypatch.setattr(read.time, "sleep", sleep)
     return state
 
 
@@ -227,12 +227,13 @@ def test_tapback_reply_and_unread_tags_render_from_real_columns(chat_db):
     chat_db.add_message("not yet seen", handle_id=alice, is_read=0)
 
     out = _text(get_recent_messages(hours=1))
-    assert "[tapback: loved]: (reaction)" in out
-    assert "[reply]: threaded answer" in out
+    assert '[tapback: loved → "original"]: (reaction)' in out
+    assert '[reply to: "original"]: threaded answer' in out
     assert "[unread]: not yet seen" in out
 
     unread = _text(get_recent_messages(hours=1, unread_only=True))
-    assert "not yet seen" in unread and "original" not in unread
+    assert "not yet seen" in unread
+    assert "]: original" not in unread, "the read message itself is excluded"
 
 
 def test_date_range_filters_use_apple_epoch_correctly(chat_db):

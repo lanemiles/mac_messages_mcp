@@ -45,12 +45,12 @@ def _row(**overrides):
 def _read(rows, **kwargs):
     """Call get_recent_messages with every collaborator mocked out."""
     with (
-        patch("mac_messages_mcp.messages.query_messages_db", return_value=rows),
+        patch("mac_messages_mcp.db.query_messages_db", return_value=rows),
         patch(
-            "mac_messages_mcp.messages._attachments_for_message_ids", return_value={}
+            "mac_messages_mcp.attachments._attachments_for_message_ids", return_value={}
         ),
-        patch("mac_messages_mcp.messages.get_chat_mapping", return_value={}),
-        patch("mac_messages_mcp.messages.get_contact_name", return_value="Alice"),
+        patch("mac_messages_mcp.chats.get_chat_mapping", return_value={}),
+        patch("mac_messages_mcp.contacts.get_contact_name", return_value="Alice"),
     ):
         return get_recent_messages(**kwargs)
 
@@ -150,14 +150,14 @@ def test_no_paging_footer_when_under_limit():
 
 
 def test_limit_and_offset_bind_to_the_query():
-    with patch("mac_messages_mcp.messages.query_messages_db") as mock_query:
+    with patch("mac_messages_mcp.db.query_messages_db") as mock_query:
         mock_query.return_value = []
         with (
             patch(
-                "mac_messages_mcp.messages._attachments_for_message_ids",
+                "mac_messages_mcp.attachments._attachments_for_message_ids",
                 return_value={},
             ),
-            patch("mac_messages_mcp.messages.get_chat_mapping", return_value={}),
+            patch("mac_messages_mcp.chats.get_chat_mapping", return_value={}),
         ):
             get_recent_messages(hours=1, limit=7, offset=3)
     params = mock_query.call_args[0][1]
@@ -172,28 +172,28 @@ def test_invalid_limit_and_offset_are_rejected():
 
 
 def test_unread_only_filters_in_sql():
-    with patch("mac_messages_mcp.messages.query_messages_db") as mock_query:
+    with patch("mac_messages_mcp.db.query_messages_db") as mock_query:
         mock_query.return_value = []
         with (
             patch(
-                "mac_messages_mcp.messages._attachments_for_message_ids",
+                "mac_messages_mcp.attachments._attachments_for_message_ids",
                 return_value={},
             ),
-            patch("mac_messages_mcp.messages.get_chat_mapping", return_value={}),
+            patch("mac_messages_mcp.chats.get_chat_mapping", return_value={}),
         ):
             get_recent_messages(hours=1, unread_only=True)
     assert "m.is_read = 0" in mock_query.call_args[0][0]
 
 
 def test_date_range_replaces_the_hours_window():
-    with patch("mac_messages_mcp.messages.query_messages_db") as mock_query:
+    with patch("mac_messages_mcp.db.query_messages_db") as mock_query:
         mock_query.return_value = []
         with (
             patch(
-                "mac_messages_mcp.messages._attachments_for_message_ids",
+                "mac_messages_mcp.attachments._attachments_for_message_ids",
                 return_value={},
             ),
-            patch("mac_messages_mcp.messages.get_chat_mapping", return_value={}),
+            patch("mac_messages_mcp.chats.get_chat_mapping", return_value={}),
         ):
             get_recent_messages(start_date="2026-01-01", end_date="2026-01-31")
     sql = mock_query.call_args[0][0]
@@ -213,14 +213,14 @@ def test_invalid_dates_are_rejected():
 
 
 def test_cursor_read_ignores_the_hours_window_and_orders_ascending():
-    with patch("mac_messages_mcp.messages.query_messages_db") as mock_query:
+    with patch("mac_messages_mcp.db.query_messages_db") as mock_query:
         mock_query.return_value = []
         with (
             patch(
-                "mac_messages_mcp.messages._attachments_for_message_ids",
+                "mac_messages_mcp.attachments._attachments_for_message_ids",
                 return_value={},
             ),
-            patch("mac_messages_mcp.messages.get_chat_mapping", return_value={}),
+            patch("mac_messages_mcp.chats.get_chat_mapping", return_value={}),
         ):
             result = get_recent_messages(since_rowid=42)
     sql = mock_query.call_args[0][0]
@@ -244,9 +244,9 @@ def test_contact_and_chat_id_are_mutually_exclusive():
 
 def test_fuzzy_search_scoped_by_contact_handle():
     with (
-        patch("mac_messages_mcp.messages.query_messages_db", return_value=[]) as query,
+        patch("mac_messages_mcp.db.query_messages_db", return_value=[]) as query,
         patch(
-            "mac_messages_mcp.messages.find_handles_by_phone",
+            "mac_messages_mcp.contacts.find_handles_by_phone",
             return_value=[7],
         ),
     ):
@@ -259,9 +259,9 @@ def test_fuzzy_search_scoped_by_contact_handle():
 
 def test_fuzzy_search_scoped_by_chat_id():
     with (
-        patch("mac_messages_mcp.messages.query_messages_db", return_value=[]) as query,
+        patch("mac_messages_mcp.db.query_messages_db", return_value=[]) as query,
         patch(
-            "mac_messages_mcp.messages._find_chat_by_identifier",
+            "mac_messages_mcp.chats._find_chat_by_identifier",
             return_value={"ROWID": 5, "display_name": "Family", "style": 43},
         ),
     ):
@@ -274,7 +274,7 @@ def test_fuzzy_search_scoped_by_chat_id():
 def test_fuzzy_search_limit_is_validated_and_applied():
     assert "limit must be positive" in fuzzy_search_messages("x", limit=0)
 
-    with patch("mac_messages_mcp.messages.query_messages_db", return_value=[]) as query:
+    with patch("mac_messages_mcp.db.query_messages_db", return_value=[]) as query:
         fuzzy_search_messages("x", hours=24, limit=5)
     # Fetch a multiple of the page, capped by the soft cap.
     assert query.call_args[0][1][-1] == 500
@@ -293,12 +293,12 @@ def test_fuzzy_search_truncation_notice():
         for i in range(1, 4)
     ]
     with (
-        patch("mac_messages_mcp.messages.query_messages_db", return_value=rows),
+        patch("mac_messages_mcp.db.query_messages_db", return_value=rows),
         patch(
-            "mac_messages_mcp.messages._attachments_for_message_ids", return_value={}
+            "mac_messages_mcp.attachments._attachments_for_message_ids", return_value={}
         ),
-        patch("mac_messages_mcp.messages.get_chat_mapping", return_value={}),
-        patch("mac_messages_mcp.messages.get_contact_name", return_value="Alice"),
+        patch("mac_messages_mcp.chats.get_chat_mapping", return_value={}),
+        patch("mac_messages_mcp.contacts.get_contact_name", return_value="Alice"),
     ):
         result = fuzzy_search_messages("needle", hours=24, limit=1)
     assert "Showing the 1 best matches" in result
@@ -330,7 +330,7 @@ def test_list_conversations_labels_kinds_and_unread_counts():
             "last_message_date": None,
         },
     ]
-    with patch("mac_messages_mcp.messages.query_messages_db", return_value=rows):
+    with patch("mac_messages_mcp.db.query_messages_db", return_value=rows):
         result = list_conversations()
     # Style 45 is an ordinary one-to-one thread, not a business thread.
     assert "[direct]" in result
@@ -352,7 +352,7 @@ def test_list_conversations_unread_only_filters_and_can_be_empty():
             "last_message_date": _APPLE_NOW,
         },
     ]
-    with patch("mac_messages_mcp.messages.query_messages_db", return_value=rows):
+    with patch("mac_messages_mcp.db.query_messages_db", return_value=rows):
         assert "unread" in list_conversations(unread_only=True)
         assert "[direct]" in list_conversations()
 
@@ -361,7 +361,7 @@ def test_list_conversations_validates_limit_and_surfaces_db_errors():
     assert "limit must be positive" in list_conversations(limit=0)
     assert "at most 1000" in list_conversations(limit=5000)
     with patch(
-        "mac_messages_mcp.messages.query_messages_db",
+        "mac_messages_mcp.db.query_messages_db",
         return_value=[{"error": "disk error"}],
     ):
         assert "Error accessing chats: disk error" in list_conversations()
@@ -375,14 +375,14 @@ def test_list_conversations_validates_limit_and_surfaces_db_errors():
 def test_wait_returns_immediately_when_a_newer_row_exists():
     with (
         patch(
-            "mac_messages_mcp.messages.query_messages_db",
+            "mac_messages_mcp.db.query_messages_db",
             return_value=[{"max_rowid": 43}],
         ),
         patch(
-            "mac_messages_mcp.messages.get_recent_messages",
+            "mac_messages_mcp.read.get_recent_messages",
             return_value="NEW MESSAGES",
         ) as recent,
-        patch("mac_messages_mcp.messages.time.sleep") as sleep,
+        patch("mac_messages_mcp.read.time.sleep") as sleep,
     ):
         result = wait_for_new_messages(since_rowid=42, timeout_seconds=5)
     assert "NEW MESSAGES" in result
@@ -398,12 +398,12 @@ def test_wait_returns_immediately_when_a_newer_row_exists():
 def test_wait_times_out_without_new_rows():
     with (
         patch(
-            "mac_messages_mcp.messages.query_messages_db",
+            "mac_messages_mcp.db.query_messages_db",
             return_value=[{"max_rowid": 42}],
         ),
-        patch("mac_messages_mcp.messages.time.sleep") as sleep,
+        patch("mac_messages_mcp.read.time.sleep") as sleep,
         patch(
-            "mac_messages_mcp.messages.time.monotonic",
+            "mac_messages_mcp.read.time.monotonic",
             side_effect=[0.0, 10.0],
         ),
     ):

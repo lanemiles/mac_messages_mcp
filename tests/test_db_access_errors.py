@@ -14,9 +14,9 @@ def test_query_messages_db_operational_error(tmp_path: Path):
     db_file = tmp_path / "chat.db"
     db_file.write_bytes(b"")
     with (
-        patch("mac_messages_mcp.messages._connect_sqlite_readonly") as mock_connect,
+        patch("mac_messages_mcp.db._connect_sqlite_readonly") as mock_connect,
         patch(
-            "mac_messages_mcp.messages.get_messages_db_path",
+            "mac_messages_mcp.db.get_messages_db_path",
             return_value=str(db_file),
         ),
     ):
@@ -32,9 +32,9 @@ def test_query_addressbook_db_all_sources_fail(tmp_path: Path):
     db_file = tmp_path / "a.abcddb"
     db_file.write_bytes(b"")
     with (
-        patch("mac_messages_mcp.messages._connect_sqlite_readonly") as mock_connect,
+        patch("mac_messages_mcp.db._connect_sqlite_readonly") as mock_connect,
         patch(
-            "mac_messages_mcp.messages._addressbook_db_paths",
+            "mac_messages_mcp.contacts._addressbook_db_paths",
             return_value=([str(db_file)], "*/AddressBook-v22.abcddb"),
         ),
     ):

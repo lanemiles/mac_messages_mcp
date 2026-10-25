@@ -46,7 +46,7 @@ def make_attachment_row(
     }
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_text_file_match_returns_id_and_snippet(mock_query, tmp_path):
     body = "alpha bravo NEEDLE charlie " + ("padding " * 40)
     note = tmp_path / "note.txt"
@@ -71,7 +71,7 @@ def test_text_file_match_returns_id_and_snippet(mock_query, tmp_path):
     assert "..." in result
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_non_matching_query_reports_no_match(mock_query, tmp_path):
     note = tmp_path / "note.txt"
     note.write_text("nothing interesting here", encoding="utf-8")
@@ -111,7 +111,7 @@ def test_bad_end_date_rejected():
     assert "Error: end_date must be YYYY-MM-DD, got 'garbage'." in result
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_missing_file_counted_and_not_fatal(mock_query, tmp_path):
     missing = tmp_path / "gone.txt"
     mock_query.return_value = [
@@ -129,7 +129,7 @@ def test_missing_file_counted_and_not_fatal(mock_query, tmp_path):
     assert "1 missing file(s)" in result
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_unsupported_mime_counted(mock_query, tmp_path):
     blob = tmp_path / "archive.zip"
     blob.write_bytes(b"PK\x03\x04 needle inside a zip")
@@ -149,7 +149,7 @@ def test_unsupported_mime_counted(mock_query, tmp_path):
     assert "Found" not in result
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_unreadable_file_counted_and_not_fatal(mock_query, tmp_path):
     # A directory named like a text file: exists() is True but open() raises
     # IsADirectoryError (an OSError), which must be swallowed and counted.
@@ -169,7 +169,7 @@ def test_unreadable_file_counted_and_not_fatal(mock_query, tmp_path):
     assert "1 unreadable file(s)" in result
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_limit_caps_matches(mock_query, tmp_path):
     rows = []
     for i in range(3):
@@ -195,7 +195,7 @@ def test_limit_caps_matches(mock_query, tmp_path):
     assert mock_query.call_args[0][1][-1] == 10
 
 
-@patch("mac_messages_mcp.messages.query_messages_db")
+@patch("mac_messages_mcp.db.query_messages_db")
 def test_db_error_surfaces(mock_query):
     mock_query.return_value = [{"error": "disk error"}]
 

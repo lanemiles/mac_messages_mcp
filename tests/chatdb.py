@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -127,9 +128,24 @@ class ChatDb:
         if template is None:
             load_schema(self.conn, CHAT_SCHEMA)
         self._guid = 0
+        self._autocommit = True
 
     def close(self) -> None:
         self.conn.close()
+
+    @contextmanager
+    def batch(self):
+        """Defer commits until the block ends (bulk fixtures)."""
+        self._autocommit = False
+        try:
+            yield self
+            self.conn.commit()
+        finally:
+            self._autocommit = True
+
+    def _commit(self) -> None:
+        if self._autocommit:
+            self.conn.commit()
 
     def _next_guid(self, prefix: str) -> str:
         self._guid += 1
@@ -139,7 +155,7 @@ class ChatDb:
         cur = self.conn.execute(
             "INSERT INTO handle (id, service) VALUES (?, ?)", (address, service)
         )
-        self.conn.commit()
+        self._commit()
         return int(cur.lastrowid)
 
     def add_chat(
@@ -172,7 +188,7 @@ class ChatDb:
                 "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",
                 (chat_id, handle_id),
             )
-        self.conn.commit()
+        self._commit()
         return chat_id
 
     def add_message(
@@ -212,7 +228,7 @@ class ChatDb:
                 "VALUES (?, ?, ?)",
                 (chat_id, message_id, when),
             )
-        self.conn.commit()
+        self._commit()
         return message_id
 
     def add_attachment(
@@ -248,7 +264,7 @@ class ChatDb:
             "VALUES (?, ?)",
             (message_id, attachment_id),
         )
-        self.conn.commit()
+        self._commit()
         return attachment_id
 
 
@@ -291,3 +307,24 @@ class AddressBookDb:
             )
         self.conn.commit()
         return owner
+
+
+def make_attributed_body(text: str) -> bytes:
+    """A minimal typedstream blob the decoder reads as ``text``.
+
+    Real blobs carry attribute dictionaries after the string; the decoder only
+    needs the ``NSString`` marker, the 5-byte header, the length and the UTF-8
+    payload, which is what this builds (lengths up to 65535 bytes).
+    """
+    payload = text.encode("utf-8")
+    if len(payload) < 0x80:
+        length = bytes([len(payload)])
+    else:
+        length = b"\x81" + len(payload).to_bytes(2, "little")
+    return (
+        b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01@\x84\x84\x84\x12NSAttributedString"
+        b"\x00\x84\x84\x08NSObject\x00\x85\x92\x84\x84\x84\x08NSString\x01\x94\x84\x01+"
+        + length
+        + payload
+        + b"\x86\x84\x02iI\x01\x01\x92\x84\x84\x84\x0cNSDictionary\x00\x94\x84\x01i\x00\x86\x86"
+    )
