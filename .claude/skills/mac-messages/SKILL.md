@@ -50,6 +50,7 @@ recipient. `tool_check_db_access` prints the active policy.
 | Contact name to send-ready number(s) | `tool_find_contact` |
 | Send-ready group chat names and IDs, named or `(unnamed: participants)` | `tool_get_chats` |
 | Who is in a chat, by name and number | `tool_get_chat_participants` |
+| One thread in chronological order, paged older/newer | `tool_get_conversation` |
 | Attachment metadata by date, contact, or MIME type | `tool_search_attachments` |
 | Text inside attachment contents | `tool_search_attachment_contents` |
 | One attachment by ID | `tool_get_attachment` |
@@ -61,7 +62,7 @@ recipient. `tool_check_db_access` prints the active policy.
 
 Read-only: `tool_get_recent_messages`, `tool_fuzzy_search_messages`,
 `tool_list_conversations`, `tool_wait_for_new_messages`, `tool_find_contact`,
-`tool_get_chats`, `tool_get_chat_participants`, `tool_search_attachments`, `tool_search_attachment_contents`,
+`tool_get_chats`, `tool_get_chat_participants`, `tool_get_conversation`, `tool_search_attachments`, `tool_search_attachment_contents`,
 `tool_get_attachment`, the three checks, and `tool_list_scheduled_messages`.
 `tool_send_message` and `tool_schedule_message` send real messages;
 `tool_create_contact` changes Contacts.
@@ -110,6 +111,15 @@ never send anything.
 with its kind (direct, group, business), message count, unread count, and last
 activity. Use it to find a thread ID or to triage unread work; use
 `tool_get_chats` when you only need send-ready group chat IDs. Archived threads are hidden unless `include_archived=True` (then tagged `[archived]`); threads Messages filed under Unknown Senders are tagged `[unknown sender]`; when Messages knows when the user last opened a thread, the line also says how many inbound messages arrived "since last opened", which is a steadier triage signal than the per-message unread flag.
+
+`tool_get_conversation(chat_id, limit=50, before_rowid=None, after_rowid=None, format="text")`
+reads one thread in chronological order: with no cursor, the newest page
+oldest-first, headed by the chat's name, kind and participants, and ending with
+the ROWIDs to pass as `before_rowid` (older) or `after_rowid` (newer). Prefer it
+over `tool_get_recent_messages(chat_id=...)` when the user wants to catch up on
+one conversation. Messages that @-mention the user carry `[mentions you]`
+(JSON `mentions_me`), and `tool_list_conversations` flags such threads
+`[mentions you]` (JSON `unseen_mentions`).
 
 `tool_get_chat_participants(chat_id, format="text")` lists a chat's members
 with names and numbers; use it to learn who is in an unnamed group before

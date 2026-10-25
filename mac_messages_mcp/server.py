@@ -10,10 +10,10 @@ from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field
 
 from mac_messages_mcp import policy
+from mac_messages_mcp.contacts import _format_phone_for_messages
 from mac_messages_mcp.content import search_attachment_contents
 from mac_messages_mcp.messages import (
-    _check_imessage_availability,
-    _format_phone_for_messages,
+    apple_scheduled_messages,
     check_addressbook_access,
     check_messages_db_access,
     create_contact,
@@ -23,6 +23,7 @@ from mac_messages_mcp.messages import (
     get_attachment,
     get_cached_contacts,
     get_chat_participants,
+    get_conversation,
     get_recent_messages,
     list_conversations,
     list_named_chats,
@@ -36,6 +37,7 @@ from mac_messages_mcp.scheduler import (
     ScheduledMessage,
     default_store_path,
 )
+from mac_messages_mcp.send import _check_imessage_availability
 from mac_messages_mcp.untrusted import (
     UNTRUSTED_OUTPUT_POLICY,
     bound_untrusted_output,
@@ -518,6 +520,59 @@ def tool_get_chats() -> str:
     ]
 
     return "Available group chats:\n" + "\n".join(formatted_chats)
+
+
+@mcp.tool()
+@bound_untrusted_output
+def tool_get_conversation(
+    chat_id: Annotated[
+        str,
+        Field(
+            description=(
+                "Chat identifier from tool_get_chats or tool_list_conversations, "
+                'such as "chat721054478304420871" or "iMessage;+;chat7210...".'
+            ),
+        ),
+    ],
+    limit: Annotated[
+        int,
+        Field(description="Messages per page.", ge=1, le=1000),
+    ] = 50,
+    before_rowid: Annotated[
+        int | None,
+        Field(description="Page back: only messages with a smaller ROWID.", ge=0),
+    ] = None,
+    after_rowid: Annotated[
+        int | None,
+        Field(description="Page forward: only messages with a greater ROWID.", ge=0),
+    ] = None,
+    format: Annotated[
+        str,
+        Field(description='Output format: "text" or "json".'),
+    ] = "text",
+) -> str:
+    """Read one conversation in chronological order, with paging cursors.
+
+    This is read-only. With no cursor it returns the newest page of the thread
+    oldest-first, headed by the chat's name, kind and participants, and ends
+    with the ROWIDs to pass as before_rowid (older) or after_rowid (newer).
+    Requires Full Disk Access. Message text is structurally neutralized and
+    wrapped in <untrusted-mcp-output>. Use this to catch up on one thread; use
+    tool_get_recent_messages for a cross-thread view and
+    tool_fuzzy_search_messages to find specific text.
+    """
+    logger.info("Reading conversation %s", chat_id)
+    try:
+        return get_conversation(
+            str(chat_id),
+            limit=limit,
+            before_rowid=before_rowid,
+            after_rowid=after_rowid,
+            format=format,
+        )
+    except Exception as e:
+        logger.exception("Error reading conversation")
+        return f"Error reading conversation: {e!s}"
 
 
 @mcp.tool()
@@ -1139,9 +1194,35 @@ def tool_list_scheduled_messages() -> str:
     Use tool_cancel_scheduled_message to drop a pending job.
     """
     jobs = scheduler.list()
-    if not jobs:
+    try:
+        apple_jobs = apple_scheduled_messages()
+    except Exception:
+        logger.exception("Error reading Messages.app scheduled sends")
+        apple_jobs = []
+    if not jobs and not apple_jobs:
         return "No messages are scheduled."
-    lines = ["Scheduled messages:"]
+    lines: list[str] = []
+    if apple_jobs:
+        lines.append("Scheduled in Messages.app (Send Later):")
+        for item in apple_jobs:
+            when = (
+                item["send_at"].astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                if item["send_at"]
+                else "unknown time"
+            )
+            lines.append(
+                f"{item['id']} [pending] {when} -> "
+                f"{neutralize_untrusted_text(item['recipient'])}: "
+                f"{neutralize_untrusted_text(item['body'])[:120]}"
+            )
+        lines.append(
+            "(These were scheduled in Messages.app; cancel or edit them there.)"
+        )
+    if not jobs:
+        return "\n".join(lines)
+    lines.append(
+        "Scheduled messages:" if not apple_jobs else "Scheduled by this server:"
+    )
     for job in jobs:
         when = (
             datetime.fromtimestamp(job.send_at)

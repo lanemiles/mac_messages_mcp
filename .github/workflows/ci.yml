@@ -51,7 +51,7 @@ jobs:
       - name: Import ordering
         run: uv run --frozen --extra dev isort --check-only .
       - name: Typing (smoke)
-        run: uv run --frozen --extra dev mypy --follow-imports=skip --disable-error-code no-any-return mac_messages_mcp/server.py
+        run: uv run --frozen --extra dev mypy --follow-imports=skip --disable-error-code no-any-return mac_messages_mcp
       - name: Build distributions
         run: uv build
       - name: Verify wheel installation

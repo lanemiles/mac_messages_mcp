@@ -20,33 +20,13 @@ from typing import Any
 from . import attachments as _attachments
 from . import contacts as _contacts
 from . import db as _db
-from .attachments import ATTACHMENT_SELECT_COLS
+from . import extract as _extract
+from . import search_index as _search_index
 from .phone import canonical_handle
 from .untrusted import bound_untrusted_output, neutralize_untrusted_text
 
-# Plain-text-ish extensions we decode directly even when chat.db has no MIME
-# type (or a generic one) for the attachment.
-_TEXT_EXTENSIONS = {
-    "txt",
-    "md",
-    "csv",
-    "tsv",
-    "json",
-    "log",
-    "xml",
-    "html",
-    "htm",
-    "yaml",
-    "yml",
-    "srt",
-    "vtt",
-}
-
 # Longest snippet returned for a match, in characters.
 _MAX_SNIPPET_CHARS = 200
-
-# PDFs can be huge; only the first pages carry the human-readable content.
-_MAX_PDF_PAGES = 50
 
 
 def _resolve_contact_handles(contact: str) -> list[int] | None:
@@ -66,15 +46,15 @@ def _resolve_contact_handles(contact: str) -> list[int] | None:
             return [r["ROWID"] for r in results]
         return None
     if any(c.isdigit() for c in contact):
-        return _contacts.find_handles_by_phone(contact)
+        return _contacts._handles_for_address(contact) or None
     matches = _contacts.find_contact_by_name(contact)
     if not matches:
         return None
     resolved: list[int] = []
     for match in matches:
-        handles = _contacts.find_handles_by_phone(match["phone"]) or []
+        handles = _contacts._handles_for_address(str(match["phone"])) or []
         resolved.extend(handles)
-    return resolved or None
+    return list(dict.fromkeys(resolved)) or None
 
 
 def _build_search_query(
@@ -83,16 +63,19 @@ def _build_search_query(
     contact: str | None,
     mime_type: str | None,
     fetch_limit: int,
+    attachment_rowids: list[int] | None = None,
 ) -> tuple[str | None, tuple[Any, ...], str | None]:
     """Build the attachment-join query shared with ``search_attachments``.
 
     Returns ``(error, params, query)``. ``error`` is non-None for a bad date
     or an unresolvable contact.
     """
-    where_clauses, params, date_error = _db.date_range_clauses(start_date, end_date)
+    where_clauses, date_params, date_error = _db.date_range_clauses(
+        start_date, end_date
+    )
     if date_error is not None:
         return date_error, (), None
-    params = list(params)
+    params: list[Any] = list(date_params)
 
     if mime_type:
         like_pattern = mime_type if "%" in mime_type else f"{mime_type}%"
@@ -107,11 +90,16 @@ def _build_search_query(
         where_clauses.append(f"m.handle_id IN ({placeholders})")
         params.extend(handle_ids)
 
+    if attachment_rowids is not None:
+        placeholders = ",".join(["?"] * len(attachment_rowids))
+        where_clauses.append(f"a.ROWID IN ({placeholders})")
+        params.extend(attachment_rowids)
+
     where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
     query = f"""
         SELECT
-            {ATTACHMENT_SELECT_COLS},
+            {_attachments.attachment_select_cols()},
             m.date AS message_date,
             m.is_from_me AS is_from_me,
             m.handle_id AS handle_id
@@ -123,79 +111,6 @@ def _build_search_query(
         LIMIT ?
     """
     return None, (*params, fetch_limit), query
-
-
-def _read_text_file(path: str, max_file_bytes: int) -> tuple[str | None, str | None]:
-    """Read a text-like file, returning ``(text, skip_reason)``."""
-    try:
-        with open(path, "rb") as handle:
-            raw = handle.read(max_file_bytes)
-    except OSError:
-        return None, "unreadable"
-    return raw.decode("utf-8", errors="replace"), None
-
-
-def _read_pdf_file(path: str) -> tuple[str | None, str | None]:
-    """Extract text from the first pages of a PDF, or explain the skip."""
-    try:
-        import pypdf  # type: ignore[import-untyped]
-    except ImportError:
-        return None, "pdf_unsupported"
-
-    try:
-        reader = pypdf.PdfReader(path)
-        pages = reader.pages[:_MAX_PDF_PAGES]
-        texts = [page.extract_text() or "" for page in pages]
-    except OSError:
-        return None, "unreadable"
-    except Exception:
-        # Malformed/encrypted PDFs must not abort the whole search.
-        return None, "unreadable"
-    return "\n".join(texts), None
-
-
-def _read_image_file(path: str) -> tuple[str | None, str | None]:
-    """OCR an image when tesseract is available, or explain the skip."""
-    try:
-        import pytesseract  # type: ignore[import-untyped]
-
-        pytesseract.get_tesseract_version()
-    except Exception:
-        return None, "ocr_unsupported"
-
-    try:
-        from PIL import Image
-
-        with Image.open(path) as image:
-            text = pytesseract.image_to_string(image)
-    except OSError:
-        return None, "unreadable"
-    except Exception:
-        return None, "unreadable"
-    return text, None
-
-
-def _extract_attachment_text(
-    path: str,
-    mime_type: str | None,
-    max_file_bytes: int,
-) -> tuple[str | None, str | None]:
-    """Extract searchable text from one attachment file.
-
-    Returns ``(text, skip_reason)``. ``text`` is None when the row could not
-    be extracted; ``skip_reason`` is one of ``unreadable``,
-    ``pdf_unsupported``, ``ocr_unsupported`` or ``unsupported_type``.
-    """
-    mime = (mime_type or "").lower()
-    suffix = Path(path).suffix.lstrip(".").lower()
-
-    if mime.startswith("text/") or suffix in _TEXT_EXTENSIONS:
-        return _read_text_file(path, max_file_bytes)
-    if mime == "application/pdf":
-        return _read_pdf_file(path)
-    if mime.startswith("image/"):
-        return _read_image_file(path)
-    return None, "unsupported_type"
 
 
 def _make_snippet(text: str, query: str) -> str:
@@ -313,17 +228,25 @@ def search_attachment_contents(
     # Pull extra rows so filtering (stickers, plugin payloads, misses) can
     # still leave us with `limit` matches.
     fetch_limit = limit * 5
+    # Prefer the attachment text index: it names the attachments whose stored
+    # text mentions the query, so no file is opened at search time. The scan
+    # below is the fallback when the index is disabled or cannot answer.
+    index_hits = _search_index.candidate_attachment_rowids(query, fetch_limit)
     error, params, sql = _build_search_query(
         start_date,
         end_date,
         contact,
         mime_type,
         fetch_limit,
+        attachment_rowids=index_hits,
     )
     if error is not None:
         return error
 
-    rows = _db.query_messages_db(sql, params)  # type: ignore[arg-type]
+    if index_hits is not None and not index_hits:
+        rows = []
+    else:
+        rows = _db.query_messages_db(sql, params)  # type: ignore[arg-type]
     if rows and "error" in rows[0]:
         return f"Error querying attachments: {rows[0]['error']}"
 
@@ -345,19 +268,24 @@ def search_attachment_contents(
             break
         scanned += 1
         shaped = _attachments.shape_attachment(row)
-        path = shaped.get("path")
-        if not path or not shaped.get("exists"):
-            skipped["missing"] += 1
-            continue
-
-        text, reason = _extract_attachment_text(
-            path,
-            shaped.get("mime_type"),
-            max_file_bytes,
+        text = (
+            _search_index.attachment_text(int(shaped["id"]))
+            if index_hits is not None
+            else None
         )
-        if reason is not None:
-            skipped[reason] += 1
-            continue
+        if text is None:
+            path = shaped.get("path")
+            if not path or not shaped.get("exists"):
+                skipped["missing"] += 1
+                continue
+            text, reason = _extract.extract_attachment_text(
+                path,
+                shaped.get("mime_type"),
+                max_file_bytes,
+            )
+            if reason is not None:
+                skipped[reason] += 1
+                continue
         if not text or query.lower() not in text.lower():
             continue
 
@@ -377,6 +305,14 @@ def search_attachment_contents(
     skip_line = _format_skip_line(skipped)
     if skip_line is not None:
         lines.append(skip_line)
+    if index_hits is not None:
+        info = _search_index.status()
+        pending = int(info.get("attachments_pending") or 0)
+        if pending:
+            lines.append(
+                f"({pending} attachment(s) not yet downloaded from iCloud are not "
+                "searchable until Messages fetches them.)"
+            )
 
     lines.extend(
         (

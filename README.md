@@ -309,6 +309,7 @@ this.
 | `tool_fuzzy_search_messages`       | Search message bodies across all history through a local full-text index, then fuzzy-rank; scope by contact or chat | Read-only                       |
 | `tool_list_conversations`          | List every conversation with kind, message count, unread count, and last activity                                   | Read-only                       |
 | `tool_wait_for_new_messages`       | Block until a message newer than a ROWID cursor arrives, or the timeout expires                                     | Read-only                       |
+| `tool_get_conversation`            | Read one conversation oldest-first with sender names, quoted replies, and tapbacks; page by ROWID in either direction | Read-only                       |
 | `tool_find_contact`                | Fuzzy-match a name in Contacts and return phone numbers                                                             | Read-only                       |
 | `tool_get_chats`                   | List every group chat and its identifier; unnamed groups appear as `(unnamed: participants)`                        | Read-only                       |
 | `tool_get_chat_participants`       | List who is in a chat, by name and number                                                                           | Read-only                       |
@@ -523,6 +524,66 @@ the production schema.
   you trust and review the destination before approving a send.
 
 See [SECURITY.md](SECURITY.md) to report a vulnerability privately.
+
+## Running on an always-on Mac
+
+The common deployment is a Mac mini or spare laptop left running so an agent
+can read and answer messages while you are away. Nobody is watching that
+machine, so the server, not the client, should be what stops a bad send. Set
+the policy in the server's environment; it binds every send path, including
+scheduled sends and direct Python callers.
+
+Start with the read-only profile and loosen it only when you need sends:
+
+```json
+{
+  "mcpServers": {
+    "mac-messages": {
+      "command": "uvx",
+      "args": ["mac-messages-mcp"],
+      "env": {
+        "MAC_MESSAGES_READ_ONLY": "1"
+      }
+    }
+  }
+}
+```
+
+If the agent should be able to send, keep a human in the loop and bound the
+damage a runaway loop or injected instruction can do:
+
+```json
+{
+  "mcpServers": {
+    "mac-messages": {
+      "command": "uvx",
+      "args": ["mac-messages-mcp"],
+      "env": {
+        "MAC_MESSAGES_REQUIRE_CONFIRM": "1",
+        "MAC_MESSAGES_MAX_SENDS_PER_HOUR": "10",
+        "MAC_MESSAGES_ALLOWED_RECIPIENTS": "+15555550100,family@example.com,chat123456789",
+        "MAC_MESSAGES_ATTACHMENT_ROOTS": "~/Desktop/outbox"
+      }
+    }
+  }
+}
+```
+
+- `MAC_MESSAGES_REQUIRE_CONFIRM=1` asks the human through MCP elicitation on
+  every send, whatever the `confirm` argument says, and refuses to schedule.
+  Use it when someone will be around to approve; use read-only when nobody will.
+- `MAC_MESSAGES_MAX_SENDS_PER_HOUR` caps attempts per rolling hour, so a loop
+  that keeps retrying stalls instead of flooding a contact.
+- `MAC_MESSAGES_ALLOWED_RECIPIENTS` lists the only numbers, emails, or chat IDs
+  the server will send to. Anything else is refused before AppleScript runs.
+- `MAC_MESSAGES_ATTACHMENT_ROOTS` narrows which folders files may be attached
+  from; a single outbox folder is a good default for an unattended machine.
+
+`tool_check_db_access` reports the active policy, so you can confirm the
+environment reached the server. Full Disk Access for the MCP client is still
+required to read `chat.db`; grant it on the always-on Mac only, and keep the
+Messages account signed in there. The search index and scheduled-send queue
+live under `~/Library/Application Support/mac-messages-mcp/` on that machine.
 
 ## Troubleshooting
 

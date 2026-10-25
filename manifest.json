@@ -112,6 +112,10 @@
     {
       "name": "tool_cancel_scheduled_message",
       "description": "Cancels one pending scheduled message."
+    },
+    {
+      "name": "tool_get_conversation",
+      "description": "Read-only chronological read of one conversation with older/newer paging cursors."
     }
   ],
   "compatibility": {

@@ -73,6 +73,10 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 
+[[tool.mypy.overrides]]
+module = ["thefuzz", "thefuzz.*"]
+ignore_missing_imports = true
+
 [tool.basedpyright]
 # Point the type checker at the project venv so third-party imports resolve.
 venvPath = "."

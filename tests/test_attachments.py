@@ -10,11 +10,15 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from mac_messages_mcp.messages import (
+from mac_messages_mcp.attachments import (
     _attachments_for_message_ids,
     _describe_attachment,
-    _filter_excluded_attachments,
     _format_attachment_summary,
+)
+from mac_messages_mcp.attachments import (
+    filter_excluded_attachments as _filter_excluded_attachments,
+)
+from mac_messages_mcp.messages import (
     fuzzy_search_messages,
     get_attachment,
     get_recent_messages,

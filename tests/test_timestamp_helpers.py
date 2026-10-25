@@ -16,10 +16,10 @@ import calendar
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+from mac_messages_mcp.db import _APPLE_EPOCH
+from mac_messages_mcp.db import from_apple_ns as _from_apple_ns
+from mac_messages_mcp.db import to_apple_ns as _to_apple_ns
 from mac_messages_mcp.messages import (
-    _APPLE_EPOCH,
-    _from_apple_ns,
-    _to_apple_ns,
     fuzzy_search_messages,
     get_recent_messages,
 )

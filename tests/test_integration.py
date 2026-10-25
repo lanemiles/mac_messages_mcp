@@ -7,14 +7,13 @@ Tests all MCP tools to ensure they don't crash and handle edge cases properly.
 import os
 
 from mac_messages_mcp.messages import (
-    _check_imessage_availability,
-    _send_message_sms,
     check_addressbook_access,
     check_messages_db_access,
     extract_body_from_attributed,
     fuzzy_search_messages,
     get_recent_messages,
 )
+from mac_messages_mcp.send import _check_imessage_availability, _send_message_sms
 
 
 def test_import_fixes():

@@ -13,6 +13,5 @@ include .bandit
 include .dockerignore
 include .mcpbignore
 recursive-include fuzz *.py
-recursive-include memory-bank *.md
 recursive-include scripts *.py
 recursive-include tests *.py

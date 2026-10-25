@@ -19,8 +19,6 @@ import pytest
 from mac_messages_mcp import messages, read
 from mac_messages_mcp.content import search_attachment_contents
 from mac_messages_mcp.messages import (
-    _check_imessage_availability,
-    _verify_send_in_db,
     check_messages_db_access,
     find_handles_by_phone,
     fuzzy_search_messages,
@@ -30,6 +28,7 @@ from mac_messages_mcp.messages import (
     search_attachments,
     wait_for_new_messages,
 )
+from mac_messages_mcp.send import _check_imessage_availability, _verify_send_in_db
 from mac_messages_mcp.untrusted import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
 
 from .chatdb import (

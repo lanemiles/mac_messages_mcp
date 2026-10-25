@@ -170,6 +170,56 @@ def send_message(
     )
 
 
+# Messages.app's own Send Later queue (macOS 15+): rows with a schedule_type
+# that have not been sent yet. Their `date` is the scheduled send time.
+_APPLE_SCHEDULED_QUERY = """
+    SELECT m.ROWID, m.date, m.text, m.attributedBody, m.schedule_type,
+           m.schedule_state, m.handle_id, c.chat_identifier, c.display_name
+    FROM message m
+    LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+    LEFT JOIN chat c ON c.ROWID = cmj.chat_id
+    WHERE m.schedule_type != 0 AND m.is_from_me = 1 AND m.is_sent = 0
+    ORDER BY m.date ASC
+    LIMIT 200
+"""
+
+
+def apple_scheduled_messages() -> list[dict[str, Any]]:
+    """Messages the user scheduled from Messages.app that have not gone out.
+
+    Each item: ``{"id": "apple-<ROWID>", "send_at": datetime | None,
+    "recipient": str, "body": str, "state": int | None}``. Empty on databases
+    without the columns.
+    """
+    rows = _db.query_messages_db(_APPLE_SCHEDULED_QUERY)
+    if not rows or "error" in rows[0]:
+        return []
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        if "schedule_type" not in row or row.get("ROWID") is None:
+            continue
+        try:
+            send_at = _db.from_apple_ns(int(row["date"])) if row.get("date") else None
+        except (TypeError, ValueError, OverflowError):
+            send_at = None
+        recipient = (
+            row.get("display_name")
+            or row.get("chat_identifier")
+            or _contacts.get_handle_address(row.get("handle_id"))
+            or "unknown"
+        )
+        items.append(
+            {
+                "id": f"apple-{row['ROWID']}",
+                "send_at": send_at,
+                "recipient": str(recipient),
+                "body": _row_text(row) or "",
+                "state": row.get("schedule_state"),
+            }
+        )
+    return items
+
+
 def _row_text(row: dict[str, Any]) -> str | None:
     """Best-effort plain text for a message row (`text` column, else attributedBody).
 
@@ -517,7 +567,9 @@ def _check_imessage_availability(recipient: str) -> bool:
         # while the canonical form is lowercased. Fold both sides instead of
         # only the input, or an address stored in mixed case stops matching the
         # mixed-case spelling that used to find it.
-        query_params = (canonical_handle(recipient) or recipient.strip(),)
+        query_params: tuple[Any, ...] = (
+            canonical_handle(recipient) or recipient.strip(),
+        )
         where_clause = "h.id = ? COLLATE NOCASE"
     else:
         # Resolve through the same canonical matching the message lookup uses,
@@ -532,34 +584,26 @@ def _check_imessage_availability(recipient: str) -> bool:
         placeholders = ", ".join(["?" for _ in query_params])
         where_clause = f"h.ROWID IN ({placeholders})"
 
+    # One iMessage handle with at least one message that went through without
+    # an error is enough; EXISTS stops at the first such row instead of
+    # counting every message the handle ever carried.
     query = f"""
-        SELECT
-            h.ROWID,
-            h.service,
-            COUNT(m.guid) as text_count,
-            COUNT(CASE WHEN m.error != 0 then 1 END) as errors
+        SELECT 1 AS has_imessage
         FROM handle h
-        LEFT JOIN message m ON h.ROWID = m.handle_id
         WHERE {where_clause}
-        GROUP BY
-            h.ROWID,
-            h.service
+          AND h.service IN ('iMessage', 'iMessageLite')
+          AND EXISTS (
+              SELECT 1 FROM message m
+              WHERE m.handle_id = h.ROWID AND m.error = 0
+          )
+        LIMIT 1
         """
 
     result = _db.query_messages_db(query, query_params)
 
     if not result or "error" in result[0]:
         return False
-
-    for row in result:
-        service_type = row.get("service", "")
-        text_count = row.get("text_count", 0)
-        num_errors = row.get("errors", 0)
-        # Only iMessage counts when some messages went through without errors.
-        if num_errors < text_count and service_type in {"iMessage", "iMessageLite"}:
-            return True
-
-    return False
+    return any("has_imessage" in row for row in result)
 
 
 def _send_message_sms(

@@ -22,10 +22,9 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from mac_messages_mcp._version import __version__
+from mac_messages_mcp.attachments import _describe_attachment
+from mac_messages_mcp.contacts import _format_phone_for_messages
 from mac_messages_mcp.messages import (
-    _check_imessage_availability,
-    _describe_attachment,
-    _format_phone_for_messages,
     check_addressbook_access,
     check_messages_db_access,
     find_contact_by_name,
@@ -37,6 +36,7 @@ from mac_messages_mcp.messages import (
     search_attachments,
     send_message,
 )
+from mac_messages_mcp.send import _check_imessage_availability
 
 
 def _unwrap(fn: Callable[..., Any]) -> Callable[..., Any]:

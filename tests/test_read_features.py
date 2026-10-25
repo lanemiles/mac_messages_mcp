@@ -9,8 +9,8 @@ new-message wait. All database access is mocked; no real Messages data is read.
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+from mac_messages_mcp.db import to_apple_ns as _to_apple_ns
 from mac_messages_mcp.messages import (
-    _to_apple_ns,
     fuzzy_search_messages,
     get_recent_messages,
     list_conversations,

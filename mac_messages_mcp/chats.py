@@ -19,6 +19,33 @@ logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
 
+# Chat-table caches, keyed by database path and a (count, max ROWID)
+# fingerprint of the chat table. Chats are created rarely and renamed rarely,
+# and the fingerprint query is an index-only lookup, so every page of messages
+# no longer re-reads the chat table or re-resolves the same chat identifier.
+_CHAT_FINGERPRINT_QUERY = (
+    "SELECT COUNT(*) AS n, COALESCE(MAX(ROWID), 0) AS max_rowid FROM chat"
+)
+_CHAT_MAPPING_CACHE: dict[str, tuple[tuple[Any, Any], dict[str, str]]] = {}
+_CHAT_LOOKUP_CACHE: dict[
+    str, tuple[tuple[Any, Any], dict[str, dict[str, Any] | None]]
+] = {}
+
+
+def _chat_fingerprint() -> tuple[Any, Any] | None:
+    """(row count, max ROWID) of the chat table, or None when unreadable
+    (including a mocked query that returns something else)."""
+    rows = _db.query_messages_db(_CHAT_FINGERPRINT_QUERY)
+    if not rows or "error" in rows[0] or "n" not in rows[0]:
+        return None
+    return (rows[0].get("n"), rows[0].get("max_rowid"))
+
+
+def clear_chat_caches() -> None:
+    _CHAT_MAPPING_CACHE.clear()
+    _CHAT_LOOKUP_CACHE.clear()
+
+
 def get_chat_mapping() -> dict[str, str]:
     """Get mapping from room_name to display_name for group chats (style 43).
 
@@ -26,8 +53,22 @@ def get_chat_mapping() -> dict[str, str]:
     their messages with it misattributes the thread (e.g. "[Poke] You:").
     Only group chats get the "[Name]" prefix.
 
-    Returns an empty dict if the database is inaccessible or locked.
+    Returns an empty dict if the database is inaccessible or locked. Cached
+    per database until the chat table's fingerprint changes.
     """
+    db_path = _db.get_messages_db_path()
+    fingerprint = _chat_fingerprint()
+    if fingerprint is not None:
+        cached = _CHAT_MAPPING_CACHE.get(db_path)
+        if cached is not None and cached[0] == fingerprint:
+            return dict(cached[1])
+    mapping = _load_chat_mapping()
+    if fingerprint is not None:
+        _CHAT_MAPPING_CACHE[db_path] = (fingerprint, mapping)
+    return dict(mapping)
+
+
+def _load_chat_mapping() -> dict[str, str]:
     rows = _db.query_messages_db(
         "SELECT room_name, display_name FROM chat WHERE style = 43"
     )
@@ -129,11 +170,42 @@ def _chat_json(
 
 
 def _find_chat_by_identifier(chat_id: str) -> dict[str, Any] | None:
-    """Find a Messages chat row by chat_identifier or room_name."""
+    """Find a Messages chat row by chat_identifier or room_name.
+
+    Results (including misses) are cached per database until the chat table's
+    fingerprint changes, so a scoped poll does not re-resolve its chat every
+    second.
+    """
     chat_id = str(chat_id).strip()
     if not chat_id:
         return None
+    db_path = _db.get_messages_db_path()
+    fingerprint = _chat_fingerprint()
+    if fingerprint is not None:
+        cached = _CHAT_LOOKUP_CACHE.get(db_path)
+        if cached is not None and cached[0] == fingerprint and chat_id in cached[1]:
+            hit = cached[1][chat_id]
+            return dict(hit) if hit is not None else None
+    row = _lookup_chat_by_identifier(chat_id)
+    if fingerprint is not None:
+        cached = _CHAT_LOOKUP_CACHE.get(db_path)
+        if cached is None or cached[0] != fingerprint:
+            cached = (fingerprint, {})
+            _CHAT_LOOKUP_CACHE[db_path] = cached
+        # Every spelling of the resolved chat points at the same row, so a
+        # later lookup by the other form is a hit too.
+        keys = {chat_id}
+        if row is not None:
+            for value in (row.get("chat_identifier"), row.get("room_name")):
+                if value:
+                    keys |= _identifier_spellings(str(value))
+        for key in keys:
+            cached[1][key] = dict(row) if row is not None else None
+    return row
 
+
+def _identifier_spellings(chat_id: str) -> set[str]:
+    """The forms a chat identifier may be written in."""
     variants = {chat_id}
     if chat_id.startswith("chat"):
         variants.add(f"iMessage;-;{chat_id}")
@@ -142,6 +214,11 @@ def _find_chat_by_identifier(chat_id: str) -> dict[str, Any] | None:
         short_id = chat_id.rsplit(";", 1)[-1]
         if short_id.startswith("chat"):
             variants.add(short_id)
+    return variants
+
+
+def _lookup_chat_by_identifier(chat_id: str) -> dict[str, Any] | None:
+    variants = _identifier_spellings(chat_id)
 
     placeholders = ", ".join(["?" for _ in variants])
     query = f"""
@@ -204,7 +281,10 @@ def list_named_chats() -> list[dict[str, Any]]:
     participants = _participants_for_chats(unnamed)
     for row in kept:
         if not row.get("display_name"):
-            row["participants"] = participants.get(row.get("chat_row_id"), [])
+            chat_row_id = row.get("chat_row_id")
+            row["participants"] = (
+                participants.get(chat_row_id, []) if chat_row_id is not None else []
+            )
     return kept
 
 
@@ -310,7 +390,10 @@ _CONVERSATIONS_QUERY = """
         GROUP BY chat_id
     ),
     unread AS (
-        SELECT cmj.chat_id, COUNT(*) AS unread_count
+        SELECT cmj.chat_id,
+               COUNT(*) AS unread_count,
+               SUM(CASE WHEN m.has_unseen_mention = 1 THEN 1 ELSE 0 END)
+                   AS unseen_mentions
         FROM message m
         JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
         WHERE m.is_read = 0 AND m.is_from_me = 0
@@ -336,6 +419,7 @@ _CONVERSATIONS_QUERY = """
         c.last_read_message_timestamp AS last_read_message_timestamp,
         COALESCE(a.message_count, 0) AS message_count,
         COALESCE(u.unread_count, 0) AS unread_count,
+        COALESCE(u.unseen_mentions, 0) AS unseen_mentions,
         COALESCE(s.unseen_count, 0) AS unseen_count,
         a.last_message_date AS last_message_date
     FROM chat c
@@ -431,6 +515,7 @@ def list_conversations(
             continue
         archived = bool(row.get("is_archived"))
         filtered = bool(row.get("is_filtered"))
+        mentions = int(row.get("unseen_mentions") or 0)
         if archived and not include_archived:
             continue  # legacy query cannot filter in SQL
         name = row.get("display_name") or row.get("chat_identifier") or "unknown"
@@ -456,6 +541,8 @@ def list_conversations(
             flags += " [archived]"
         if filtered:
             flags += " [unknown sender]"
+        if mentions:
+            flags += " [mentions you]"
         counts = f"{row.get('message_count') or 0} message(s), {unread} unread"
         if opened_dt is not None:
             counts += f", {unseen} since last opened"
@@ -473,6 +560,7 @@ def list_conversations(
                 "filtered": filtered,
                 "message_count": int(row.get("message_count") or 0),
                 "unread_count": unread,
+                "unseen_mentions": mentions,
                 "unseen_since_last_opened": unseen if opened_dt is not None else None,
                 "last_opened_at": _db.isoformat_local(opened_dt) if opened_dt else None,
                 "last_message_at": _db.isoformat_local(last_dt) if last_dt else None,

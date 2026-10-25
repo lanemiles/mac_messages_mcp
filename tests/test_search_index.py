@@ -166,3 +166,18 @@ def test_fuzzy_ranking_still_applies_on_top_of_index_hits(chat_db, index_path):
     )
     scores = [m["score"] for m in data["messages"]]
     assert scores == sorted(scores, reverse=True) and scores[0] == 1.0
+
+
+def test_json_search_with_index_and_no_candidates_returns_empty_json(
+    chat_db, deep_history, index_path
+):
+    # Found by running mypy on the whole package: the JSON early return for
+    # "index answered, nothing matched" called a helper defined further down
+    # the function, so it raised UnboundLocalError instead of returning [].
+    import json
+
+    out = _inner(fuzzy_search_messages("quokka", hours=0, limit=10, format="json"))
+    payload = json.loads(out)
+    assert payload["messages"] == []
+    assert payload["query"] == "quokka"
+    assert payload["results_truncated"] is False

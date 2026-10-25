@@ -67,9 +67,7 @@ def _looks_like_phone_input(value: str) -> bool:
 _CONTACTS_CACHE = None
 
 
-_LAST_CACHE_UPDATE = 0
-
-
+_LAST_CACHE_UPDATE: float = 0.0
 _CACHE_TTL_S = 300  # 5 minutes in seconds
 
 
@@ -630,6 +628,7 @@ def _sync_handle_name_cache(contacts_map_stamp: float) -> None:
     if contacts_map_stamp != _HANDLE_NAME_CACHE_STAMP:
         _HANDLE_NAME_CACHE.clear()
         _HANDLE_ADDRESS_CACHE.clear()
+        _HANDLE_PERSON_CACHE.clear()
         _HANDLE_NAME_CACHE_STAMP = contacts_map_stamp
 
 
@@ -638,6 +637,7 @@ def clear_handle_name_cache() -> None:
     global _HANDLE_NAME_CACHE_STAMP
     _HANDLE_NAME_CACHE.clear()
     _HANDLE_ADDRESS_CACHE.clear()
+    _HANDLE_PERSON_CACHE.clear()
     _HANDLE_NAME_CACHE_STAMP = -1.0
     _CANONICAL_HANDLE_CACHE.clear()
 
@@ -673,14 +673,21 @@ def prime_contact_names(handle_ids: Any) -> None:
 
     placeholders = ", ".join("?" for _ in missing)
     rows = _db.query_messages_db(
-        f"SELECT ROWID, id FROM handle WHERE ROWID IN ({placeholders})",
+        "SELECT ROWID, id, person_centric_id FROM handle "
+        f"WHERE ROWID IN ({placeholders})",
         tuple(missing),
     )
+    if rows and "error" in rows[0] and "person_centric_id" in str(rows[0]["error"]):
+        rows = _db.query_messages_db(
+            f"SELECT ROWID, id FROM handle WHERE ROWID IN ({placeholders})",
+            tuple(missing),
+        )
     if not rows or "error" in rows[0]:
         if rows and "error" in rows[0]:
             return
         rows = []
     addresses: dict[int, str] = {}
+    person_ids: dict[int, str] = {}
     for row in rows:
         if "id" not in row:
             continue
@@ -690,6 +697,12 @@ def prime_contact_names(handle_ids: Any) -> None:
         if rowid is not None:
             addresses[int(rowid)] = str(row["id"])
             _HANDLE_ADDRESS_CACHE[(db_path, int(rowid))] = str(row["id"])
+            person = row.get("person_centric_id") or None
+            _HANDLE_PERSON_CACHE[(db_path, int(rowid))] = (
+                str(person) if person else None
+            )
+            if person:
+                person_ids[int(rowid)] = str(person)
 
     unresolved: dict[int, str] = {}
     for handle_id in missing:
@@ -705,6 +718,34 @@ def prime_contact_names(handle_ids: Any) -> None:
 
     if not unresolved:
         return
+
+    # A handle the AddressBook does not list may belong to a person whose
+    # other handle it does list: ask Apple's grouping for the siblings.
+    sibling_people = sorted({person_ids[h] for h in unresolved if h in person_ids})
+    if sibling_people:
+        placeholders = ", ".join("?" for _ in sibling_people)
+        rows = _db.query_messages_db(
+            "SELECT person_centric_id, id FROM handle "
+            f"WHERE person_centric_id IN ({placeholders})",
+            tuple(sibling_people),
+        )
+        names_by_person: dict[str, str] = {}
+        if rows and "error" not in rows[0]:
+            for row in rows:
+                person = row.get("person_centric_id")
+                if not person or "id" not in row or person in names_by_person:
+                    continue
+                name = _name_from_addressbook(str(row["id"]), contacts_map)
+                if name is not None:
+                    names_by_person[str(person)] = name
+        for handle_id in list(unresolved):
+            name = names_by_person.get(person_ids.get(handle_id, ""))
+            if name is not None:
+                _HANDLE_NAME_CACHE[(db_path, handle_id)] = name
+                del unresolved[handle_id]
+        if not unresolved:
+            return
+
     placeholders = ", ".join("?" for _ in unresolved)
     rows = _db.query_messages_db(
         _CHAT_NAME_FALLBACK_QUERY.format(placeholders=placeholders),
@@ -768,21 +809,69 @@ def _all_weak_matches(matches: list[dict[str, Any]]) -> bool:
 
 
 def _handles_for_address(address: str) -> list[int]:
-    """Return every handle ROWID for one phone number or email address.
+    """Return every handle ROWID for one phone number or email address, plus
+    the other handles Messages groups with them as the same person.
 
     An email is matched case-insensitively (handle.id compares case-sensitively
     and the canonical form is lowercased). A phone number is tried in its
-    various stored formats and returns all handles across protocols.
+    various stored formats and returns all handles across protocols. The
+    result is then widened through ``handle.person_centric_id``, Apple's own
+    record of which numbers and emails belong to one person, so reading "by
+    phone" also covers that person's iMessage email handles without the
+    AddressBook having to list them.
     """
     if "@" in address:
         results = _db.query_messages_db(
             "SELECT ROWID FROM handle WHERE id = ? COLLATE NOCASE",
             (canonical_handle(address) or address.strip(),),
         )
-        if results and "error" not in results[0]:
-            return [row["ROWID"] for row in results]
+        direct = (
+            [row["ROWID"] for row in results]
+            if results and "error" not in results[0]
+            else []
+        )
+    else:
+        direct = find_handles_by_phone(address) or []
+    return expand_handles_by_person(direct)
+
+
+# handle ROWID -> person_centric_id, per database; filled alongside names.
+_HANDLE_PERSON_CACHE: dict[tuple[str, int], str | None] = {}
+
+
+def expand_handles_by_person(handle_ids: list[int]) -> list[int]:
+    """Add every handle sharing a person_centric_id with one of ``handle_ids``.
+
+    Handles without a person id (or a database without the column) are left
+    as they are; order is preserved with the originals first.
+    """
+    if not handle_ids:
         return []
-    return find_handles_by_phone(address) or []
+    placeholders = ", ".join("?" for _ in handle_ids)
+    rows = _db.query_messages_db(
+        "SELECT ROWID FROM handle WHERE person_centric_id IS NOT NULL "
+        "AND person_centric_id != '' AND person_centric_id IN ("
+        f"SELECT person_centric_id FROM handle WHERE ROWID IN ({placeholders}))",
+        tuple(handle_ids),
+    )
+    expanded = list(dict.fromkeys(int(h) for h in handle_ids))
+    if rows and "error" not in rows[0]:
+        for row in rows:
+            rowid = row.get("ROWID")
+            if rowid is not None and int(rowid) not in expanded and "id" not in row:
+                expanded.append(int(rowid))
+    return expanded
+
+
+def get_handle_person_id(handle_id: int | None) -> str | None:
+    """Apple's person_centric_id for a handle, or None when it has none."""
+    if handle_id is None:
+        return None
+    db_path = _db.get_messages_db_path()
+    key = (db_path, int(handle_id))
+    if key not in _HANDLE_PERSON_CACHE:
+        prime_contact_names([handle_id])
+    return _HANDLE_PERSON_CACHE.get(key)
 
 
 def _get_phone_formats(recipient: str) -> list[str]:

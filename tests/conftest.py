@@ -12,7 +12,7 @@ from datetime import timezone
 
 import pytest
 
-from mac_messages_mcp import contacts, db, messages, policy, read, search_index
+from mac_messages_mcp import contacts, db, messages, session
 
 from .chatdb import AddressBookDb, ChatDb
 
@@ -27,10 +27,7 @@ def _reset_process_caches(monkeypatch, tmp_path_factory):
     Attachment tests send files from pytest's temp directory, so that root is
     allowed by default here; the policy tests override it explicitly.
     """
-    contacts.clear_handle_name_cache()
-    db.close_cached_connections()
-    policy.reset_send_budget()
-    read._MESSAGE_COLUMNS_CACHE.clear()
+    session.Session().reset()
     # Displayed times and local-day filters go through db.local_timezone().
     # Pin it so results do not depend on the timezone of the machine running
     # the suite (a Mac in New York and a CI runner in UTC must agree). Tests
@@ -41,7 +38,6 @@ def _reset_process_caches(monkeypatch, tmp_path_factory):
     )
     monkeypatch.setenv("MAC_MESSAGES_SCHEDULE_STORE", "none")
     monkeypatch.setenv("MAC_MESSAGES_SEARCH_INDEX", "none")
-    search_index.reset()
     for var in (
         "MAC_MESSAGES_READ_ONLY",
         "MAC_MESSAGES_REQUIRE_CONFIRM",
@@ -50,8 +46,7 @@ def _reset_process_caches(monkeypatch, tmp_path_factory):
     ):
         monkeypatch.delenv(var, raising=False)
     yield
-    contacts.clear_handle_name_cache()
-    db.close_cached_connections()
+    session.Session().reset()
 
 
 @pytest.fixture(scope="session")

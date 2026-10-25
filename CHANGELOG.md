@@ -52,6 +52,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows and, because modern macOS stores most bodies only in `attributedBody`
   where SQL cannot filter them, silently missed anything older.
   `tool_check_db_access` reports the index size.
+- The group-chat name map and chat-identifier lookups are cached per database
+  until the chat table's (count, max ROWID) fingerprint changes, so a page of
+  messages or a scoped poll no longer re-reads the chat table; both spellings
+  of a chat identifier hit the same cache entry. `tool_check_imessage_availability`
+  asks whether one error-free iMessage row exists (`EXISTS … LIMIT 1`) instead
+  of counting every message the handle ever carried.
+- `tool_search_attachment_contents` searches extracted attachment text through
+  the local index (`attachments_fts`) instead of opening and extracting every
+  candidate file on each call. Text is extracted once per attachment,
+  incrementally by ROWID; files not yet downloaded from iCloud are remembered
+  and retried on later searches, and the report says how many are still
+  awaiting download. Snippets come from the stored text. Extraction helpers
+  moved to `extract.py` so both the search and the index can use them.
+- `tool_list_scheduled_messages` also lists messages scheduled from
+  Messages.app itself (Send Later, macOS 15+), read from `message.schedule_type`
+  / `schedule_state`, as `apple-<ROWID>` entries with their send time and
+  recipient; it says to cancel or edit those in Messages.app.
+- More of what chat.db knows is shown. Attachments: a missing file is reported
+  as `[not downloaded from iCloud]` (from `attachment.transfer_state`) rather
+  than `[missing on disk]` when Messages never fetched it, and Genmoji carry
+  their description (`genmoji: a cat wearing a top hat`). Messages: subject
+  lines (`[subject: …]`), send effects (`[effect: impact]`), voice memos that
+  were played (`[played]`), `[time sensitive]`, `[delivered quietly]`; JSON adds
+  `subject`, `effect`, `played_at`, `time_sensitive`, `delivered_quietly`,
+  `kt_verified` (Contact Key Verification), `via_account` and `to_my_address`
+  (which of your own numbers or emails a message went through), and attachment
+  `downloaded` / `genmoji`. Optional columns are probed per database.
+- Message-semantics helpers (bodies, tags, tapbacks, replies, events, effects)
+  moved from `read.py` into `semantics.py`; `read.py` keeps the queries and
+  rendering.
+- App balloons and edit history are decoded (`mac_messages_mcp/payloads.py`).
+  A link preview shows its title (`[link preview: "How to brew better
+  coffee"]`, JSON `link: {title, url}`); other iMessage-app balloons show
+  their readable content (`[app: PeerPaymentMessagesExtension — $25.00; Dinner
+  split]`, JSON `app_payload`); an edited message shows what it said before
+  (`[edited; was: "see you at 7"]`, JSON `edit_history`). The blobs are fetched
+  in one extra query only for the rows on the page that have a balloon or an
+  edit, since link previews can carry images. The typedstream decoder moved to
+  `typedstream.py` so both reads and payload decoding can use it.
+- New `tool_get_conversation(chat_id, limit, before_rowid, after_rowid)`
+  reads one thread in chronological order with cursors to page older or newer,
+  headed by the chat's name, kind and participants. Messages that @-mention
+  you are tagged `[mentions you]` (JSON `mentions_me`), and
+  `tool_list_conversations` flags such threads `[mentions you]` (JSON
+  `unseen_mentions`), from `message.has_unseen_mention`.
+- Contact resolution follows Apple's own grouping of a person's handles,
+  `handle.person_centric_id`. Reading or searching attachments by a phone
+  number now also covers that person's iMessage email handles (and vice
+  versa) without the AddressBook card having to list them, a handle the
+  AddressBook does not know gets its name from a sibling handle it does know,
+  and JSON senders carry `person_id`. Handles Apple has not linked are left
+  separate.
 - Reads surface the details chat.db records but used to drop or flatten:
   tapbacks quote what they reacted to (`[tapback: loved → "Dinner at…"]`,
   including custom-emoji tapbacks), replies quote the original
@@ -93,6 +145,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `draft_reply`.
 
 ### Changed
+- Scope resolution (`contact` / `chat_id` → which handles or chat a read
+  matches) moved from `read.py` into `scope.py` and returns a `Scope` with
+  named fields and a `sql_clauses()` method, so the three read tools share one
+  filter builder instead of each rebuilding the `handle_id IN (...)` /
+  `chat_message_join` clauses. The old five-tuple still unpacks. `session.py`
+  gathers every process-level cache (sender names, chat lookups, column
+  probes, SQLite connections, send budget, search index) behind
+  `Session.reset()` / `Session.status()`; the test suite resets through it.
+- `mac_messages_mcp.messages` re-exports only public names. It is generated by
+  `scripts/gen_facade.py` (checked in; `--check` runs in the test suite), and
+  private helpers are imported from the module that owns them. CI now
+  type-checks the whole package rather than `server.py` alone, and the
+  package is clean under that check.
+- The README documents an always-on Mac setup (read-only or confirm-every-send
+  profiles with a send cap, recipient allow-list, and attachment root), and
+  lists `tool_get_conversation`. The stale `memory-bank/` design notes are
+  removed from the repository and the sdist.
 - `tool_list_conversations` no longer joins every message in the database. Last
   activity and counts come from `chat_message_join.message_date` (indexed),
   unread counts start from the small unread set, and the new "since last
@@ -139,6 +208,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than faking them.
 
 ### Fixed
+- A JSON-format `tool_fuzzy_search_messages` call that the full-text index
+  answered with no candidates raised `UnboundLocalError` instead of returning
+  an empty result: the empty-JSON helper was defined below its first use.
+  Found by type-checking the whole package.
 - Date filters bind Apple-epoch timestamps as integers. They were bound as
   strings and compared with `CAST(m.date AS TEXT)`, which is lexicographic: a
   pre-2017 row storing seconds (nine digits) could sort above a nanosecond

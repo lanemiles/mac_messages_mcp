@@ -90,11 +90,9 @@ def test_facade_keeps_the_public_api():
         "extract_body_from_attributed",
         "run_applescript",
         "escape_applescript",
-        "_check_imessage_availability",
-        "_describe_attachment",
-        "_format_phone_for_messages",
-        "_to_apple_ns",
-        "_from_apple_ns",
+        "to_apple_ns",
+        "from_apple_ns",
+        "resolve_scope",
     ):
         assert hasattr(messages, name), name
 
@@ -123,3 +121,69 @@ def test_named_chats_query_is_shared_by_server_and_cli():
     from mac_messages_mcp import chats
 
     assert callable(getattr(chats, "list_named_chats", None))
+
+
+# --- Round 2 #11: public facade, committed generator, whole-package types ---
+
+
+def _facade_names() -> set[str]:
+    names: set[str] = set()
+    for node in ast.parse(_source("messages")).body:
+        if isinstance(node, ast.ImportFrom):
+            names.update(alias.asname or alias.name for alias in node.names)
+    return names
+
+
+def test_facade_exports_only_the_public_api():
+    """``messages`` is the import surface for the server, CLI, and downstream
+    users. Private helpers are reached from the module that owns them, so the
+    facade does not freeze every ``_internal`` as public API by accident."""
+    private = sorted(n for n in _facade_names() if n.startswith("_"))
+    assert private == [], f"facade re-exports private names: {private}"
+
+
+def test_nothing_imports_private_names_through_the_facade():
+    offenders = []
+    for path in [*Path(__file__).parent.glob("*.py"), *PACKAGE.glob("*.py")]:
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom) and node.module in (
+                "mac_messages_mcp.messages",
+                ".messages",
+                "messages",
+            ):
+                offenders += [
+                    f"{path.name}: {a.name}"
+                    for a in node.names
+                    if a.name.startswith("_")
+                ]
+    assert offenders == [], offenders
+
+
+def test_facade_generator_is_committed_and_current():
+    """The facade is generated. The generator lives in the repo and its
+    ``--check`` mode confirms ``messages.py`` matches what it would emit, so a
+    new public name cannot be added to a core module and forgotten here."""
+    import subprocess
+    import sys
+
+    script = PACKAGE.parent / "scripts" / "gen_facade.py"
+    assert script.exists(), "scripts/gen_facade.py is missing"
+    result = subprocess.run(
+        [sys.executable, str(script), "--check"],
+        cwd=PACKAGE.parent,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("workflow", ["ci.yml", "publish.yml"])
+def test_ci_type_checks_the_whole_package(workflow):
+    """mypy on ``server.py`` alone with ``--follow-imports=skip`` checks one
+    file of twenty-six; a use-before-definition in ``read.py`` shipped past it."""
+    text = (PACKAGE.parent / ".github" / "workflows" / workflow).read_text()
+    mypy_lines = [line for line in text.splitlines() if "mypy" in line]
+    assert mypy_lines, f"{workflow} does not run mypy"
+    for line in mypy_lines:
+        assert "mac_messages_mcp/server.py" not in line, line
+        assert re.search(r"\bmac_messages_mcp/?(\s|$)", line), line

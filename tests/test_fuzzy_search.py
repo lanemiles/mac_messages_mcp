@@ -23,7 +23,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from mac_messages_mcp.messages import _escape_like, fuzzy_search_messages
+from mac_messages_mcp.db import _escape_like
+from mac_messages_mcp.messages import (
+    fuzzy_search_messages,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers

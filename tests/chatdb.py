@@ -241,22 +241,27 @@ class ChatDb:
         uti: str | None = None,
         total_bytes: int = 0,
         is_sticker: int = 0,
+        transfer_state: int = 5,
+        **columns: Any,
     ) -> int:
         guid = self._next_guid("att")
+        values: dict[str, Any] = {
+            "guid": guid,
+            "original_guid": guid,
+            "filename": filename,
+            "mime_type": mime_type,
+            "transfer_name": transfer_name
+            or (Path(filename).name if filename else None),
+            "uti": uti,
+            "total_bytes": total_bytes,
+            "is_sticker": is_sticker,
+            "transfer_state": transfer_state,
+            **columns,
+        }
+        cols = ", ".join(values)
+        marks = ", ".join("?" for _ in values)
         cur = self.conn.execute(
-            "INSERT INTO attachment (guid, original_guid, filename, mime_type, "
-            "transfer_name, uti, total_bytes, is_sticker) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                guid,
-                guid,
-                filename,
-                mime_type,
-                transfer_name or (Path(filename).name if filename else None),
-                uti,
-                total_bytes,
-                is_sticker,
-            ),
+            f"INSERT INTO attachment ({cols}) VALUES ({marks})", tuple(values.values())
         )
         attachment_id = int(cur.lastrowid)
         self.conn.execute(

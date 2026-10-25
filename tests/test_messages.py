@@ -8,16 +8,10 @@ import subprocess
 import tempfile
 from unittest.mock import MagicMock, patch
 
+from mac_messages_mcp.chats import _find_chat_by_display_name, _find_chat_by_identifier
+from mac_messages_mcp.contacts import _clean_text, _format_phone_for_messages
+from mac_messages_mcp.db import _connect_sqlite_readonly
 from mac_messages_mcp.messages import (
-    _check_imessage_availability,
-    _clean_text,
-    _connect_sqlite_readonly,
-    _find_chat_by_display_name,
-    _find_chat_by_identifier,
-    _format_phone_for_messages,
-    _sanitize_message_body,
-    _send_message_to_recipient,
-    _verify_send_in_db,
     clean_name,
     escape_applescript,
     extract_body_from_attributed,
@@ -33,6 +27,12 @@ from mac_messages_mcp.messages import (
     run_applescript,
     send_message,
     set_recent_contact_matches,
+)
+from mac_messages_mcp.read import _sanitize_message_body
+from mac_messages_mcp.send import (
+    _check_imessage_availability,
+    _send_message_to_recipient,
+    _verify_send_in_db,
 )
 
 from .test_phone import region_pinned
@@ -557,33 +557,36 @@ def test_send_to_one_person_with_several_handles_uses_phone(mock_contacts, mock_
     assert mock_send.call_args.args[0] == "+15038638650"
 
 
-@patch("mac_messages_mcp.db.query_messages_db", return_value=[])
-@patch("mac_messages_mcp.contacts.find_handles_by_phone", return_value=[11])
-@patch("mac_messages_mcp.contacts.get_cached_contacts")
-def test_read_one_person_with_several_handles_unions_them(
-    mock_contacts,
-    mock_phone_handles,
-    mock_query,
-):
-    from mac_messages_mcp.messages import _resolve_message_scope
+def test_read_one_person_with_several_handles_unions_them(chat_db, address_book):
+    """One card with a phone and two emails reads across all three handles.
 
-    mock_contacts.return_value = _HUNT_CONTACTS
-    # Each email handle resolves to its own ROWID; the phone to 11.
-    mock_query.side_effect = [[{"ROWID": 22}], [{"ROWID": 33}]]
-    with patch.dict("mac_messages_mcp.contacts._PHONE_TO_DETAILS_MAP", {}, clear=True):
-        handle_ids, chat_row_id, _, _, error = _resolve_message_scope(
-            "Andrew Hunt",
-            None,
-        )
+    Runs against real chat.db and AddressBook schemas, so the number of
+    queries the resolver makes is not pinned here; what matters is the scope.
+    """
+    from mac_messages_mcp.scope import resolve_scope
 
-    assert error is None
-    assert chat_row_id is None
-    assert sorted(handle_ids) == [11, 22, 33]
+    address_book.add_contact(
+        "Andrew",
+        "Hunt",
+        phones=("+15038638650",),
+        emails=("andrew@hunt.codes", "andrew.hunt@airbnb.com"),
+    )
+    address_book.add_contact("Dave", "Hunt", phones=("+15038108387",))
+    phone = chat_db.add_handle("+15038638650")
+    email_a = chat_db.add_handle("andrew@hunt.codes")
+    email_b = chat_db.add_handle("andrew.hunt@airbnb.com")
+    chat_db.add_handle("+15038108387")
+
+    resolved = resolve_scope("Andrew Hunt", None)
+
+    assert resolved.error is None
+    assert resolved.chat_row_id is None
+    assert sorted(resolved.handle_ids) == sorted([phone, email_a, email_b])
 
 
 @patch("mac_messages_mcp.contacts.get_cached_contacts")
 def test_read_two_different_people_still_prompts(mock_contacts):
-    from mac_messages_mcp.messages import _resolve_message_scope
+    from mac_messages_mcp.scope import resolve_scope as _resolve_message_scope
 
     mock_contacts.return_value = _WHITE_CONTACTS
     with patch.dict("mac_messages_mcp.contacts._PHONE_TO_DETAILS_MAP", {}, clear=True):
@@ -1097,13 +1100,13 @@ def test_combined():
 
 
 def test_candidate_handles_email():
-    from mac_messages_mcp.messages import _candidate_handles
+    from mac_messages_mcp.contacts import _candidate_handles
 
     assert _candidate_handles("a@b.com") == ["a@b.com"]
 
 
 def test_candidate_handles_international():
-    from mac_messages_mcp.messages import _candidate_handles
+    from mac_messages_mcp.contacts import _candidate_handles
 
     handles = _candidate_handles("+447378174086")
     assert "+447378174086" in handles
@@ -1111,7 +1114,7 @@ def test_candidate_handles_international():
 
 
 def test_candidate_handles_us_number():
-    from mac_messages_mcp.messages import _candidate_handles
+    from mac_messages_mcp.contacts import _candidate_handles
 
     with region_pinned("US"):
         handles = _candidate_handles("6058813494")
@@ -1155,34 +1158,24 @@ def test_national_input_finds_same_handle_under_configured_region(
     assert "+10639980001" not in searched
 
 
-@patch("mac_messages_mcp.db.query_messages_db")
-def test_falls_back_to_canonical_scan_when_indexed_lookup_finds_nothing(
-    mock_query_db,
-):
-    """A full-table scan still matches when the indexed lookup misses."""
-    mock_query_db.side_effect = [
-        [],  # indexed lookup on the predicted variant spellings: no match
-        [{"n": 2, "max_rowid": 4}],  # handle-table fingerprint for the scan cache
-        [
-            {"ROWID": 3, "id": "0639980001"},  # same number, different spelling
-            {"ROWID": 4, "id": "+15555550142"},
-        ],
-    ]
+def test_falls_back_to_canonical_scan_when_indexed_lookup_finds_nothing(chat_db):
+    """A full-table scan still matches when the indexed lookup misses.
+
+    The handle is stored in a national spelling the variant predictor does not
+    produce, so only the canonical scan over the handle table can find it.
+    """
+    chat_db.add_handle("+15555550142")
+    same_number = chat_db.add_handle("0639980001")
 
     with region_pinned("FR"):
         result = find_handles_by_phone("+33639980001")
 
-    assert result == [3]
+    assert result == [same_number]
 
 
-@patch("mac_messages_mcp.db.query_messages_db")
-def test_no_match_returns_none(mock_query_db):
+def test_no_match_returns_none(chat_db):
     """When no stored handle reduces to the same canonical number, None is returned."""
-    mock_query_db.side_effect = [
-        [],
-        [{"n": 1, "max_rowid": 4}],  # handle-table fingerprint for the scan cache
-        [{"ROWID": 4, "id": "+15555550142"}],
-    ]
+    chat_db.add_handle("+15555550142")
 
     with region_pinned("FR"):
         result = find_handles_by_phone("+33639980001")
@@ -1202,7 +1195,7 @@ def test_no_match_returns_none(mock_query_db):
 def test_mixed_case_email_matches_lowercase_handle(mock_query_db):
     """A mixed-case address is folded before it reaches the query."""
     mock_query_db.return_value = [
-        {"ROWID": 1, "service": "iMessage", "text_count": 3, "errors": 0},
+        {"has_imessage": 1},
     ]
 
     assert _check_imessage_availability("Hugo.Example@Example.COM")
@@ -1216,7 +1209,7 @@ def test_mixed_case_email_matches_lowercase_handle(mock_query_db):
 def test_lowercase_email_still_matches_mixed_case_handle(mock_query_db):
     """The comparison is folded in the query, so the stored case does not matter."""
     mock_query_db.return_value = [
-        {"ROWID": 1, "service": "iMessage", "text_count": 3, "errors": 0},
+        {"has_imessage": 1},
     ]
 
     assert _check_imessage_availability("hugo.example@example.com")
@@ -1384,7 +1377,7 @@ def test_find_chat_by_display_name_ambiguous(mock_query):
 
 
 def test_replacement_chars_detected():
-    from mac_messages_mcp.messages import _is_attachment_placeholder_body
+    from mac_messages_mcp.semantics import _is_attachment_placeholder_body
 
     assert _is_attachment_placeholder_body("�")
     assert _is_attachment_placeholder_body("  ��  ")

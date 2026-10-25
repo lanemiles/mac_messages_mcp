@@ -81,6 +81,8 @@ def shape_attachment(row: dict[str, Any]) -> dict[str, Any]:
             "uti": row.get("uti"),
             "size_bytes": size_bytes,
             "exists": False,
+            "downloaded": _downloaded(row, False),
+            "genmoji": row.get("emoji_image_short_description") or None,
         }
     exists = Path(path).exists()
     if exists:
@@ -99,7 +101,22 @@ def shape_attachment(row: dict[str, Any]) -> dict[str, Any]:
         "uti": row.get("uti"),
         "size_bytes": size_bytes,
         "exists": exists,
+        "downloaded": _downloaded(row, exists),
+        "genmoji": row.get("emoji_image_short_description") or None,
     }
+
+
+def _downloaded(row: dict[str, Any], exists: bool) -> bool:
+    """False when Messages has not (yet) pulled the file down from iCloud."""
+    if exists:
+        return True
+    state = row.get("transfer_state")
+    if state is None:
+        return True  # older schema: cannot tell, so do not invent a reason
+    try:
+        return int(state) == _TRANSFER_STATE_DONE
+    except (TypeError, ValueError):
+        return True
 
 
 ATTACHMENT_SELECT_COLS = """
@@ -114,6 +131,34 @@ ATTACHMENT_SELECT_COLS = """
     a.hide_attachment AS hide_attachment,
     a.created_date AS created_date
 """
+
+# Columns newer macOS versions add; selected only when this database has them.
+_OPTIONAL_ATTACHMENT_COLUMNS = ("transfer_state", "emoji_image_short_description")
+_ATTACHMENT_COLUMNS_CACHE: dict[str, str] = {}
+
+# attachment.transfer_state value Messages writes once the file is fully on
+# disk. Anything else on a missing file means it was never (or not yet)
+# downloaded, typically because Messages in iCloud keeps older attachments in
+# the cloud, which is a different problem from a deleted file.
+_TRANSFER_STATE_DONE = 5
+
+
+def attachment_select_cols() -> str:
+    """``ATTACHMENT_SELECT_COLS`` plus whichever optional columns exist here."""
+    db_path = _db.get_messages_db_path()
+    cached = _ATTACHMENT_COLUMNS_CACHE.get(db_path)
+    if cached is not None:
+        return cached
+    rows = _db.query_messages_db("PRAGMA table_info(attachment)")
+    present = {str(r.get("name")) for r in rows if "name" in r} if rows else set()
+    if "filename" not in present:
+        return ATTACHMENT_SELECT_COLS
+    extra = "".join(
+        f",\n    a.{c} AS {c}" for c in _OPTIONAL_ATTACHMENT_COLUMNS if c in present
+    )
+    sql = ATTACHMENT_SELECT_COLS.rstrip() + extra + "\n"
+    _ATTACHMENT_COLUMNS_CACHE[db_path] = sql
+    return sql
 
 
 def _format_attachment_summary(attachments: list[dict[str, Any]]) -> str:
@@ -131,7 +176,12 @@ def _format_attachment_summary(attachments: list[dict[str, Any]]) -> str:
         mime = neutralize_untrusted_text(att.get("mime_type") or "?")
         # Filename helps when an agent is choosing between several attachments
         # on the same message; cap at 3 to keep the line short.
-        if len(attachments) <= 3 and att.get("filename"):
+        if att.get("genmoji"):
+            parts.append(
+                f"#{att['id']} {mime} (genmoji: "
+                f"{neutralize_untrusted_text(att['genmoji'])})"
+            )
+        elif len(attachments) <= 3 and att.get("filename"):
             filename = neutralize_untrusted_text(att["filename"])
             parts.append(f"#{att['id']} {mime} ({filename})")
         else:
@@ -146,7 +196,14 @@ def _format_attachment_line(
 ) -> str:
     """Format one search_attachments row as a single summary line."""
     size_kb = (shaped["size_bytes"] or 0) / 1024
-    marker = "" if shaped["exists"] else " [missing on disk]"
+    if shaped["exists"]:
+        marker = ""
+    elif not shaped.get("downloaded", True):
+        marker = " [not downloaded from iCloud]"
+    else:
+        marker = " [missing on disk]"
+    if shaped.get("genmoji"):
+        marker += f" (genmoji: {shaped['genmoji']})"
     return (
         f"- id={shaped['id']} msg={shaped['message_id']} "
         f"[{date_str}] from {sender} | "
@@ -170,7 +227,7 @@ def _attachments_for_message_ids(
     placeholders = ",".join(["?"] * len(message_ids))
     query = f"""
         SELECT
-            {ATTACHMENT_SELECT_COLS},
+            {attachment_select_cols()},
             m.is_from_me AS is_from_me,
             m.handle_id AS handle_id
         FROM message_attachment_join maj
@@ -253,15 +310,15 @@ def search_attachments(
             if results and "error" not in results[0]:
                 handle_ids = [r["ROWID"] for r in results]
         elif any(c.isdigit() for c in contact):
-            handle_ids = _contacts.find_handles_by_phone(contact)
+            handle_ids = _contacts._handles_for_address(contact) or None
         else:
             matches = _contacts.find_contact_by_name(contact)
             if matches:
                 resolved_handles: list[int] = []
                 for m in matches:
-                    h = _contacts.find_handles_by_phone(m["phone"]) or []
+                    h = _contacts._handles_for_address(str(m["phone"])) or []
                     resolved_handles.extend(h)
-                handle_ids = resolved_handles or None
+                handle_ids = list(dict.fromkeys(resolved_handles)) or None
         if not handle_ids:
             return f"No handles found for contact '{contact}'."
         placeholders = ",".join(["?"] * len(handle_ids))
@@ -272,7 +329,7 @@ def search_attachments(
 
     query = f"""
         SELECT
-            {ATTACHMENT_SELECT_COLS},
+            {attachment_select_cols()},
             m.date AS message_date,
             m.is_from_me AS is_from_me,
             m.handle_id AS handle_id
@@ -341,6 +398,8 @@ def search_attachments(
                     "filename": text(shaped["filename"]),
                     "size_bytes": shaped["size_bytes"],
                     "exists": bool(shaped["exists"]),
+                    "downloaded": bool(shaped.get("downloaded", True)),
+                    "genmoji": text(shaped.get("genmoji")),
                     "path": text(shaped["path"]),
                 }
             )
@@ -391,7 +450,7 @@ def _load_attachment_row(attachment_id: int) -> tuple[dict[str, Any] | None, str
     rows = _db.query_messages_db(
         f"""
         SELECT
-            {ATTACHMENT_SELECT_COLS},
+            {attachment_select_cols()},
             m.is_from_me AS is_from_me,
             m.handle_id AS handle_id
         FROM message_attachment_join maj
@@ -426,9 +485,15 @@ def _format_attachment_metadata(
         return f"Attachment {attachment_id}: no filename recorded in database.", None
 
     if not Path(path).exists():
+        reason = (
+            "not downloaded from iCloud (open the conversation in Messages to "
+            "fetch it)"
+            if not shaped.get("downloaded", True)
+            else "missing on disk"
+        )
         return (
             f"Attachment {attachment_id} ({shaped['filename']}, {mime or 'unknown'}): "
-            f"missing on disk at {path}",
+            f"{reason} at {path}",
             None,
         )
 
@@ -460,7 +525,7 @@ def _describe_attachment(attachment_id: int) -> tuple[str, str | None]:
 def get_attachment(
     attachment_id: int,
     max_bytes: int = _DEFAULT_MAX_INLINE_BYTES,
-):
+) -> str | list[Any]:
     """Fetch a specific attachment by its ROWID.
 
     Always returns the resolved filesystem path so the human (or agent's

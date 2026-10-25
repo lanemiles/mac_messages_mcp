@@ -17,6 +17,7 @@ a duplicate.
 
 from __future__ import annotations
 
+import builtins
 import json
 import logging
 import math
@@ -260,7 +261,7 @@ class MessageScheduler:
             self._condition.notify_all()
             return job
 
-    def list(self) -> list[ScheduledMessage]:
+    def list(self) -> builtins.list[ScheduledMessage]:
         """Return every known job in stable order by ``send_at`` then ``id``.
 
         Jobs that already ran stay listed with their terminal status; cancelled
@@ -284,7 +285,9 @@ class MessageScheduler:
             self._condition.notify_all()
             return True
 
-    def run_due(self, now: float | None = None) -> list[tuple[ScheduledMessage, str]]:
+    def run_due(
+        self, now: float | None = None
+    ) -> builtins.list[tuple[ScheduledMessage, str]]:
         """Execute every pending job whose ``send_at`` is at or before ``now``.
 
         ``now`` defaults to the scheduler clock. Each executed job is marked
@@ -296,7 +299,7 @@ class MessageScheduler:
         moment = self._clock() if now is None else now
         return self._execute(self._claim_due(moment))
 
-    def _claim_due(self, now: float) -> list[ScheduledMessage]:
+    def _claim_due(self, now: float) -> builtins.list[ScheduledMessage]:
         """Mark every pending job due at ``now`` as running and return them.
 
         Jobs are claimed under the lock and run outside it: a real send shells
@@ -319,10 +322,10 @@ class MessageScheduler:
 
     def _execute(
         self,
-        jobs: list[ScheduledMessage],
-    ) -> list[tuple[ScheduledMessage, str]]:
+        jobs: builtins.list[ScheduledMessage],
+    ) -> builtins.list[tuple[ScheduledMessage, str]]:
         """Run claimed jobs and record their outcomes; never raises."""
-        executed: list[tuple[ScheduledMessage, str]] = []
+        executed: builtins.list[tuple[ScheduledMessage, str]] = []
         for job in jobs:
             try:
                 outcome = self._send(job)

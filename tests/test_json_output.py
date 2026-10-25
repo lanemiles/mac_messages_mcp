@@ -84,6 +84,8 @@ def test_recent_messages_json_has_one_field_per_fact(chat_db, tmp_path):
             "filename": "IMG_9.png",
             "size_bytes": 6,
             "exists": True,
+            "downloaded": True,
+            "genmoji": None,
             "path": str(picture),
         }
     ]
@@ -121,6 +123,7 @@ def test_list_conversations_json(chat_db):
         "filtered": False,
         "message_count": 1,
         "unread_count": 1,
+        "unseen_mentions": 0,
         "unseen_since_last_opened": None,
         "last_opened_at": None,
         "last_message_at": data["conversations"][0]["last_message_at"],

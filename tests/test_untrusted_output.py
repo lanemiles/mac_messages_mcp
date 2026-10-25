@@ -11,12 +11,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mac_messages_mcp.messages import (
-    _sanitize_message_body,
     fuzzy_search_messages,
     get_attachment,
     get_recent_messages,
     search_attachments,
 )
+from mac_messages_mcp.read import _sanitize_message_body
 from mac_messages_mcp.server import (
     get_contact_messages_resource,
     get_recent_messages_resource,
