@@ -8,6 +8,8 @@ unaffected.
 
 from __future__ import annotations
 
+from datetime import timezone
+
 import pytest
 
 from mac_messages_mcp import contacts, db, messages, policy, read, search_index
@@ -29,6 +31,11 @@ def _reset_process_caches(monkeypatch, tmp_path_factory):
     db.close_cached_connections()
     policy.reset_send_budget()
     read._MESSAGE_COLUMNS_CACHE.clear()
+    # Displayed times and local-day filters go through db.local_timezone().
+    # Pin it so results do not depend on the timezone of the machine running
+    # the suite (a Mac in New York and a CI runner in UTC must agree). Tests
+    # about timezone behaviour override this with their own zone.
+    monkeypatch.setattr(db, "local_timezone", lambda: timezone.utc)
     monkeypatch.setenv(
         "MAC_MESSAGES_ATTACHMENT_ROOTS", str(tmp_path_factory.getbasetemp())
     )
