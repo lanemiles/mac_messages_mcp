@@ -95,7 +95,8 @@ never send anything.
   cursor note naming the highest ROWID seen and the exact `since_rowid` to pass
   next; `tool_wait_for_new_messages` polls the same way.
 - Message lines may carry service and state tags such as `[iMessage]`, `[SMS]`,
-  `[unread]`, `[not delivered]`, `[reply]`, or `[tapback: liked]`.
+  `[unread]`, `[not delivered]` (Messages recorded a send error; JSON carries
+  the code as `error_code`), `[reply]`, or `[tapback: liked]`.
 
 `tool_fuzzy_search_messages(search_term, hours=720, threshold=0.6, *, contact=None, chat_id=None, start_date=None, end_date=None, limit=100)`
 
@@ -136,7 +137,10 @@ Every read tool (`tool_get_recent_messages`, `tool_fuzzy_search_messages`,
 fence, with one field per fact (`rowid`, ISO-8601 `date` with the Mac's UTC
 offset, `sender`/`to` with name, handle_id and address, `chat` with id, kind and
 participants for unnamed groups, `body`, `tags`, `attachments`, and a `cursor`).
-Prefer JSON when you will act on individual fields; text when a human reads it.
+Prefer JSON when you will act on individual fields; text when a human reads it. A JSON page
+larger than the output cap keeps valid JSON: trailing items are dropped,
+`page.has_more` is set and `truncated.items_dropped` says how many; page again
+with a smaller `limit` or an `offset`.
 
 Message lines show who an outbound message went to (`You → Alice`) for 1:1
 threads, and label group chats `[Family]` when named or

@@ -218,7 +218,17 @@ def _message_tag_list(
             tags.append(f"read {read_at}")
         elif delivered_at:
             tags.append(f"delivered {delivered_at}")
-        elif row.get("is_sent") and row.get("is_delivered") is not None:
+        elif row.get("send_error"):
+            # Messages recorded a send failure. ``is_delivered = 0`` on its own
+            # is not one: an outbound row synced from another device (Messages
+            # in iCloud) never gets a delivery receipt on this Mac.
+            tags.append("not delivered")
+        elif (
+            "send_error" not in row
+            and row.get("is_sent")
+            and row.get("is_delivered") is not None
+        ):
+            # Older schema / fixture without an ``error`` column: the old rule.
             if not row.get("is_delivered"):
                 tags.append("not delivered")
     elif row.get("is_read") is not None and not row.get("is_read"):

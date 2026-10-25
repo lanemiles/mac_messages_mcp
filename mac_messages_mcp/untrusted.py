@@ -14,6 +14,7 @@ is not the security control.
 from __future__ import annotations
 
 import functools
+import json
 import re
 import unicodedata
 from collections.abc import Callable
@@ -167,12 +168,64 @@ def _truncate_output(text: str, max_chars: int = _MAX_UNTRUSTED_OUTPUT_CHARS) ->
     return f"{text[:max_chars].rstrip()}... [truncated {omitted} chars]"
 
 
+def _truncate_json(text: str, max_chars: int) -> str | None:
+    """Shorten a JSON object by dropping whole trailing list items.
+
+    A ``format="json"`` page that is cut mid-string is not JSON any more, so
+    when the text parses as an object with a list in it (``messages``,
+    ``conversations``, ...), the longest list loses items from the end until
+    the document fits, ``page.has_more`` is set, and a ``truncated`` object
+    records how many were dropped. Returns None when the text is not such an
+    object or even one item will not fit, and the caller cuts the string.
+    """
+    if not text.lstrip().startswith("{"):
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    lists = [k for k, v in data.items() if isinstance(v, list) and v]
+    if not lists:
+        return None
+    key = max(lists, key=lambda k: len(data[k]))
+    items = data[key]
+    total = len(items)
+    page = data.get("page")
+    if isinstance(page, dict):
+        page["has_more"] = True
+
+    def _fits(n: int) -> bool:
+        data[key] = items[:n]
+        data["truncated"] = {"items_dropped": total - n, "max_chars": max_chars}
+        return len(json.dumps(data, ensure_ascii=False)) <= max_chars
+
+    lo, hi = 0, total - 1  # largest n that fits; all `total` is known not to
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _fits(mid):
+            lo = mid
+        else:
+            hi = mid - 1
+    if lo == 0:
+        return None
+    _fits(lo)
+    return json.dumps(data, ensure_ascii=False)
+
+
 def _present_text(text: str) -> _PresentedUntrusted:
     original = text
     serialized = neutralize_untrusted_text(original)
     serialized = _defang_fence_tokens(serialized)
     if _visible_ratio(original) < _LOW_VISIBLE_RATIO:
         serialized += _VISIBLE_RATIO_WARNING
+    if len(serialized) > _MAX_UNTRUSTED_OUTPUT_CHARS:
+        as_json = _truncate_json(serialized, _MAX_UNTRUSTED_OUTPUT_CHARS)
+        if as_json is not None:
+            return _PresentedUntrusted(
+                f"{UNTRUSTED_OPEN}\n{as_json}\n{UNTRUSTED_CLOSE}"
+            )
     serialized = _truncate_output(serialized)
     return _PresentedUntrusted(f"{UNTRUSTED_OPEN}\n{serialized}\n{UNTRUSTED_CLOSE}")
 

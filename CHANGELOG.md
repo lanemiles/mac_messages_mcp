@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and none of the user's; the scope now also matches any message in a 1:1 chat
   whose participant is that contact. Group chats are still matched only by the
   contact's own lines.
+- `[not delivered]` is now driven by `message.error` (Messages' own send-failure
+  code, exposed as `error_code` in JSON) rather than `is_delivered = 0`. An
+  outbound message synced from another device never gets a delivery receipt on
+  this Mac, so nearly every message the user sent from their phone was flagged
+  as undelivered. A chat.db without an `error` column keeps the old rule.
+- `format="json"` output that exceeds the 100,000-character output cap is
+  shortened by dropping whole trailing list items — `page.has_more` is set and a
+  `truncated` object records `items_dropped` — instead of being cut mid-string
+  into invalid JSON.
 
 ### Added
 - Added an agent skill (`.claude/skills/mac-messages/SKILL.md`) that documents when and how to call each MCP tool, plus a README section on installing it for another project or agent.

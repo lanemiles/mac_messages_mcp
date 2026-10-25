@@ -171,3 +171,63 @@ def test_json_cursors_are_the_boundary_messages_by_date(chat_db, scrambled):
 def test_unknown_cursor_is_an_error_not_an_empty_page(chat_db, scrambled):
     out = get_conversation(ALICE, before_rowid=424242)
     assert "Error" in out and "424242" in out
+
+
+# ---------------------------------------------------------------------------
+# [not delivered]: synced outbound rows never get a receipt on this device
+# ---------------------------------------------------------------------------
+
+
+def test_synced_outbound_without_receipt_is_not_flagged_undelivered(
+    chat_db, synced_direct
+):
+    """A message the user sent from the iPhone arrives with is_sent=1,
+    is_delivered=0 and no receipt dates — that is a sync artifact, not a
+    failure. Only a row that Messages marked with an error is undelivered."""
+    direct = synced_direct["direct"]
+    chat_db.add_message(
+        "sent from my phone",
+        handle_id=0,
+        is_from_me=1,
+        is_sent=1,
+        is_delivered=0,
+        error=0,
+        chat_id=direct,
+        date=_minutes_ago(3),
+    )
+    chat_db.add_message(
+        "really failed",
+        handle_id=0,
+        is_from_me=1,
+        is_sent=1,
+        is_delivered=0,
+        error=22,
+        service="SMS",
+        chat_id=direct,
+        date=_minutes_ago(2),
+    )
+    lines = _inner(get_recent_messages(hours=1, chat_id=ALICE)).splitlines()
+    phone = next(l for l in lines if "sent from my phone" in l)
+    failed = next(l for l in lines if "really failed" in l)
+    assert "[not delivered]" not in phone, phone
+    assert "[not delivered]" in failed, failed
+
+
+def test_json_exposes_the_error_code(chat_db, synced_direct):
+    chat_db.add_message(
+        "really failed",
+        handle_id=0,
+        is_from_me=1,
+        is_sent=1,
+        is_delivered=0,
+        error=22,
+        chat_id=synced_direct["direct"],
+        date=_minutes_ago(2),
+    )
+    data = json.loads(
+        _inner(get_recent_messages(hours=1, chat_id=ALICE, format="json"))
+    )
+    failed = next(m for m in data["messages"] if m["body"] == "really failed")
+    assert failed["error_code"] == 22
+    ok = next(m for m in data["messages"] if m["body"] == "me: hi back (synced)")
+    assert ok.get("error_code") in (None, 0)

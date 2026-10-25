@@ -566,3 +566,36 @@ def test_body_helper_is_not_sufficient_for_metadata():
     )
     sealed = present_untrusted_output(naive)
     _assert_no_forged_structural_line(sealed)
+
+
+def test_json_over_the_cap_stays_valid_json():
+    """A JSON page over the cap loses whole trailing items, not half a string."""
+    import json as _json
+
+    body = "x" * 1000
+    payload = {
+        "messages": [{"rowid": i, "body": body} for i in range(400)],
+        "cursor": {"next_since_rowid": 399},
+        "page": {"limit": 400, "offset": 0, "has_more": False},
+    }
+    text = _json.dumps(payload, ensure_ascii=False)
+    assert len(text) > _MAX_UNTRUSTED_OUTPUT_CHARS
+    inner = _inner(present_untrusted_output(text))
+    assert len(inner) <= _MAX_UNTRUSTED_OUTPUT_CHARS + 200
+    data = _json.loads(inner)
+    assert 0 < len(data["messages"]) < 400
+    assert data["messages"][0]["rowid"] == 0, "items are dropped from the end"
+    assert data["page"]["has_more"] is True
+    assert data["truncated"]["items_dropped"] == 400 - len(data["messages"])
+    assert data["cursor"]["next_since_rowid"] == 399, "other fields untouched"
+
+
+def test_json_under_the_cap_is_untouched():
+    import json as _json
+
+    text = _json.dumps({"messages": [{"rowid": 1}], "page": {"has_more": False}})
+    inner = _inner(present_untrusted_output(text))
+    assert _json.loads(inner) == {
+        "messages": [{"rowid": 1}],
+        "page": {"has_more": False},
+    }

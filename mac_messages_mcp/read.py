@@ -122,6 +122,11 @@ def _message_columns() -> str:
         c for c in _OPTIONAL_MESSAGE_COLUMNS if c in present
     )
     sql = ",\n        ".join(f"m.{c}" for c in columns)
+    # ``message.error`` is Messages' send-failure code. It is selected under
+    # another name because a row key called "error" is how this codebase
+    # reports a failed query (``"error" in rows[0]``).
+    if "error" in present:
+        sql += ",\n        m.error AS send_error"
     _MESSAGE_COLUMNS_CACHE[db_path] = sql
     return sql
 
@@ -395,6 +400,8 @@ def _message_json(record: dict[str, Any]) -> dict[str, Any]:
     if record["is_from_me"]:
         item["delivered_at"] = _iso_or_none(row.get("date_delivered"))
         item["read_at"] = _iso_or_none(row.get("date_read"))
+        if row.get("send_error"):
+            item["error_code"] = int(row["send_error"])
     if record["event"] is not None:
         event = dict(record["event"])
         event["actor"] = _output._json_text(_actor_name(row))
