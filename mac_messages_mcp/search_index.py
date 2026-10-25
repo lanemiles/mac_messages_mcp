@@ -72,7 +72,9 @@ def _connect(path: Path) -> sqlite3.Connection:
     reset()
     path.parent.mkdir(parents=True, exist_ok=True)
     existed = path.exists()
-    conn = sqlite3.connect(path)
+    # One connection for the process, used from whichever worker thread the
+    # server runs a tool on; every use is serialised by ``_lock``.
+    conn = sqlite3.connect(path, check_same_thread=False)
     if not existed:
         os.chmod(path, 0o600)
     conn.execute("PRAGMA journal_mode = WAL")

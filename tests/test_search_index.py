@@ -181,3 +181,16 @@ def test_json_search_with_index_and_no_candidates_returns_empty_json(
     assert payload["messages"] == []
     assert payload["query"] == "quokka"
     assert payload["results_truncated"] is False
+
+
+def test_index_is_usable_from_any_worker_thread(chat_db, deep_history, index_path):
+    # Tools now run in anyio's thread pool, so consecutive searches arrive on
+    # different threads. The index keeps one connection for the process; it
+    # must not be bound to whichever thread happened to open it.
+    import concurrent.futures
+
+    first = search_index.candidate_rowids("zebra", 10)
+    assert first == [deep_history]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        second = pool.submit(search_index.candidate_rowids, "zebra", 10).result()
+    assert second == [deep_history]

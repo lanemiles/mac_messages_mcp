@@ -1,11 +1,14 @@
 # Copyright (c) 2023 Carter Lasalle
 """Mac Messages MCP - Entry point fixed for proper MCP protocol implementation."""
 
+import functools
+import inspect
 import logging
 import sys
 from datetime import datetime
 from typing import Annotated, Any, Callable
 
+import anyio
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field
 
@@ -90,18 +93,71 @@ scheduler = MessageScheduler(
 )
 
 
+def _off_loop(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a blocking function as a coroutine that runs it in a worker thread.
+
+    FastMCP awaits coroutine tools but calls plain functions inline on the
+    event loop, so a tool that polls chat.db for five minutes or indexes
+    400,000 rows would stop the server answering anything else (pings,
+    cancellations, parallel calls) until it returned. Every tool body here is
+    synchronous SQLite/AppleScript work, so it is handed to anyio's thread
+    pool. ``abandon_on_cancel`` lets a cancelled request return at once while
+    the thread finishes its current poll. SQLite connections are already
+    per-thread (``db._LOCAL``); the module caches are plain dicts. A tool
+    that is already a coroutine (``tool_send_message`` needs the request
+    context for elicitation) is registered as it is.
+    """
+    if inspect.iscoroutinefunction(fn):
+        return fn
+
+    @functools.wraps(fn)
+    async def runner(*args: Any, **kwargs: Any) -> Any:
+        return await anyio.to_thread.run_sync(
+            functools.partial(fn, *args, **kwargs), abandon_on_cancel=True
+        )
+
+    return runner
+
+
+def _tool() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Register a synchronous tool so the server runs it off the event loop.
+
+    The function itself is returned unchanged, so ``server.tool_x(...)`` stays
+    an ordinary call for the Python API and the tests; only the copy FastMCP
+    holds is the threaded coroutine.
+    """
+    register = mcp.tool()
+
+    def apply(fn: Callable[..., Any]) -> Callable[..., Any]:
+        register(_off_loop(fn))
+        return fn
+
+    return apply
+
+
 def _write_tool() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """``@mcp.tool()`` for a tool that writes; a no-op in read-only mode.
+    """``_tool()`` for a tool that writes; a no-op in read-only mode.
 
     An unregistered tool cannot be called at all, which is a stronger guarantee
     than refusing inside it (the functions refuse too, as defence in depth).
     """
     if policy.read_only():
         return lambda fn: fn
-    return mcp.tool()
+    return _tool()
 
 
-@mcp.tool()
+def _resource(uri: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """``@mcp.resource(uri)`` with the same off-loop treatment as ``_tool``."""
+    register = mcp.resource(uri)
+
+    def apply(fn: Callable[..., Any]) -> Callable[..., Any]:
+        register(_off_loop(fn))
+        return fn
+
+    return apply
+
+
+@_tool()
 @bound_untrusted_output
 def tool_get_recent_messages(
     hours: Annotated[
@@ -347,11 +403,15 @@ async def tool_send_message(
             )
 
     try:
-        result = send_message(
-            recipient=recipient,
-            message=message,
-            group_chat=group_chat,
-            attachment_paths=attachment_paths,
+        # AppleScript blocks for seconds; keep the loop free meanwhile.
+        result = await anyio.to_thread.run_sync(
+            functools.partial(
+                send_message,
+                recipient=recipient,
+                message=message,
+                group_chat=group_chat,
+                attachment_paths=attachment_paths,
+            )
         )
     except Exception as e:
         logger.exception("Error in send_message")
@@ -359,7 +419,7 @@ async def tool_send_message(
     return present_untrusted_output(result)
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_find_contact(
     name: Annotated[
@@ -412,7 +472,7 @@ def tool_find_contact(
     return "\n".join(result)
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_check_db_access() -> str:
     """Diagnose read access to the local macOS Messages database.
@@ -431,7 +491,7 @@ def tool_check_db_access() -> str:
         return f"Error checking database access: {e!s}"
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_check_contacts() -> str:
     """List a small sample of contacts available from AddressBook.
@@ -469,7 +529,7 @@ def tool_check_contacts() -> str:
     return "\n".join(result)
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_check_addressbook() -> str:
     """Diagnose read access to the local macOS AddressBook database.
@@ -487,7 +547,7 @@ def tool_check_addressbook() -> str:
         return f"Error checking AddressBook: {e!s}"
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_get_chats() -> str:
     """List group chats from the macOS Messages database, named or not.
@@ -522,7 +582,7 @@ def tool_get_chats() -> str:
     return "Available group chats:\n" + "\n".join(formatted_chats)
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_get_conversation(
     chat_id: Annotated[
@@ -575,7 +635,7 @@ def tool_get_conversation(
         return f"Error reading conversation: {e!s}"
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_get_chat_participants(
     chat_id: Annotated[
@@ -607,7 +667,7 @@ def tool_get_chat_participants(
         return f"Error listing chat participants: {e!s}"
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_check_imessage_availability(
     recipient: Annotated[
@@ -651,7 +711,7 @@ def tool_check_imessage_availability(
     )
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_fuzzy_search_messages(
     search_term: Annotated[
@@ -768,7 +828,7 @@ def tool_fuzzy_search_messages(
         return f"An unexpected error occurred during fuzzy message search: {e!s}"
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_search_attachments(
     start_date: Annotated[
@@ -845,7 +905,7 @@ def tool_search_attachments(
         return f"Error searching attachments: {e!s}"
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_get_attachment(
     attachment_id: Annotated[
@@ -888,7 +948,7 @@ def tool_get_attachment(
         return f"Error getting attachment: {e!s}"
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_list_conversations(
     limit: Annotated[
@@ -937,7 +997,7 @@ def tool_list_conversations(
         return f"Error listing conversations: {e!s}"
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_wait_for_new_messages(
     since_rowid: Annotated[
@@ -1006,7 +1066,7 @@ def tool_wait_for_new_messages(
         return f"Error waiting for new messages: {e!s}"
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_search_attachment_contents(
     query: Annotated[
@@ -1182,7 +1242,7 @@ def tool_schedule_message(
     )
 
 
-@mcp.tool()
+@_tool()
 @bound_untrusted_output
 def tool_list_scheduled_messages() -> str:
     """List messages scheduled in this server process and their status.
@@ -1289,7 +1349,7 @@ def draft_reply(contact: str) -> str:
     )
 
 
-@mcp.resource("messages://recent/{hours}")
+@_resource("messages://recent/{hours}")
 @bound_untrusted_output
 def get_recent_messages_resource(hours: int = 24) -> str:
     """Return recent messages; the payload is untrusted third-party content.
@@ -1299,7 +1359,7 @@ def get_recent_messages_resource(hours: int = 24) -> str:
     return get_recent_messages(hours=hours)
 
 
-@mcp.resource("messages://contact/{contact}/{hours}")
+@_resource("messages://contact/{contact}/{hours}")
 @bound_untrusted_output
 def get_contact_messages_resource(contact: str, hours: int = 24) -> str:
     """Return messages from a contact; the payload is untrusted third-party content.

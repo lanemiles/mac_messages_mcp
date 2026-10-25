@@ -208,6 +208,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than faking them.
 
 ### Fixed
+- Tools no longer block the server. FastMCP runs a plain function inline on
+  its event loop, so `tool_wait_for_new_messages` (up to 300 s of polling), a
+  first search over an unindexed database, or an AppleScript send stopped the
+  server answering pings, cancellations, and other calls until it finished.
+  Every synchronous tool and resource is now registered through a coroutine
+  that runs it in a worker thread, and `tool_send_message` hands its
+  AppleScript call to a thread too. The functions themselves stay ordinary
+  synchronous calls for the Python API. The search index's shared SQLite
+  connection, which only worked because everything ran on one thread, is now
+  usable from any worker thread (all access was already serialised by a
+  lock); before this fix a search from a second thread quietly fell back to
+  the bounded LIKE scan.
 - A JSON-format `tool_fuzzy_search_messages` call that the full-text index
   answered with no candidates raised `UnboundLocalError` instead of returning
   an empty result: the empty-JSON helper was defined below its first use.
