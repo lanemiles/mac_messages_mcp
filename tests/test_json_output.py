@@ -119,6 +119,7 @@ def test_list_conversations_json(chat_db):
         "chat_id": "chat1",
         "name": "Family",
         "kind": "group",
+        "participants": None,
         "archived": False,
         "filtered": False,
         "message_count": 1,

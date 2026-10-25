@@ -208,6 +208,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than faking them.
 
 ### Fixed
+- `tool_list_conversations` names 1:1 conversations after the contact
+  (`Alice Example (+15555550100)`) instead of the bare phone number, resolved
+  for the whole page in one batched lookup from the existing name cache; the
+  number alone is shown only when Contacts has no card. JSON rows gain
+  `participants` (the counterpart for a 1:1 chat, `null` for groups). An agent
+  scanning the list for a name used to conclude a known contact had no thread.
 - Tools no longer block the server. FastMCP runs a plain function inline on
   its event loop, so `tool_wait_for_new_messages` (up to 300 s of polling), a
   first search over an unindexed database, or an AppleScript send stopped the

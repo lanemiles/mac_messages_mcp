@@ -161,3 +161,30 @@ def test_unseen_mentions_are_surfaced(chat_db, family):
     convo_json = json.loads(_inner(list_conversations(format="json")))
     fam = [c for c in convo_json["conversations"] if c["chat_id"] == "chat555"][0]
     assert fam["unseen_mentions"] == 1
+
+
+def test_direct_conversations_are_named_after_the_contact(chat_db, address_book):
+    """A 1:1 chat is identified by the other person's phone number in chat.db.
+    Listing it that way made an agent scan a wall of numbers and conclude a
+    known contact had no conversation; every other tool resolves the name."""
+    address_book.add_contact("Alice", "Example", phones=(ALICE,))
+    alice = chat_db.add_handle(ALICE)
+    chat = chat_db.add_chat(ALICE, handles=(alice,))
+    chat_db.add_message("hi", handle_id=alice, chat_id=chat, is_read=1)
+    stranger = chat_db.add_handle("+15555550199")
+    other = chat_db.add_chat("+15555550199", handles=(stranger,))
+    chat_db.add_message("who dis", handle_id=stranger, chat_id=other, is_read=1)
+
+    out = _inner(list_conversations())
+    assert f"Alice Example ({ALICE}) (chat ID: {ALICE})" in out, out
+    # No card for the stranger: the number stands alone, not repeated.
+    assert "+15555550199 (chat ID: +15555550199)" in out
+    assert "+15555550199 (+15555550199)" not in out
+
+    data = json.loads(_inner(list_conversations(format="json")))
+    by_id = {c["chat_id"]: c for c in data["conversations"]}
+    assert by_id[ALICE]["name"] == "Alice Example"
+    assert by_id[ALICE]["participants"] == [
+        {"handle_id": alice, "address": ALICE, "name": "Alice Example"}
+    ]
+    assert by_id["+15555550199"]["name"] == "+15555550199"

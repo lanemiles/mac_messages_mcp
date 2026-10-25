@@ -506,6 +506,20 @@ def list_conversations(
             return _output._json_dumps({"error": _output._json_text(rows[0]["error"])})
         return f"Error accessing chats: {rows[0]['error']}"
 
+    # A 1:1 chat is identified by the other person's address. Resolve the
+    # contact names for the whole page in one batched lookup so the list reads
+    # "Alice Example (+1555...)" like every other tool, not a wall of numbers an
+    # agent would scan for a name and conclude the person has no thread.
+    direct_rows = [
+        r
+        for r in rows
+        if r.get("chat_row_id") is not None
+        and _conversation_kind(r.get("style"), r.get("chat_identifier")) == "direct"
+    ]
+    participants_by_chat = _participants_for_chats(
+        [int(r["chat_row_id"]) for r in direct_rows]
+    )
+
     lines: list[str] = []
     items: list[dict[str, Any]] = []
     for row in rows:
@@ -518,7 +532,21 @@ def list_conversations(
         mentions = int(row.get("unseen_mentions") or 0)
         if archived and not include_archived:
             continue  # legacy query cannot filter in SQL
-        name = row.get("display_name") or row.get("chat_identifier") or "unknown"
+        identifier_raw = str(row.get("chat_identifier") or "")
+        participants = (
+            participants_by_chat.get(int(row["chat_row_id"]), [])
+            if row.get("chat_row_id") is not None
+            else []
+        )
+        name = row.get("display_name") or identifier_raw or "unknown"
+        label = name
+        if not row.get("display_name") and participants:
+            contact = participants[0]["name"]
+            # get_contact_name falls back to the address itself when the
+            # AddressBook has no card; only a real name earns the "Name (addr)".
+            if contact and contact != participants[0]["address"]:
+                name = contact
+                label = f"{contact} ({identifier_raw})"
         last = row.get("last_message_date")
         last_dt: datetime | None
         try:
@@ -548,7 +576,7 @@ def list_conversations(
             counts += f", {unseen} since last opened"
         lines.append(
             f"{len(lines) + 1}. [{kind}]{flags} "
-            f"{neutralize_untrusted_text(str(name))} (chat ID: {identifier}) - "
+            f"{neutralize_untrusted_text(str(label))} (chat ID: {identifier}) - "
             f"{counts}, last {last_str}",
         )
         items.append(
@@ -556,6 +584,11 @@ def list_conversations(
                 "chat_id": _output._json_text(row.get("chat_identifier")) or None,
                 "name": _output._json_text(name),
                 "kind": kind,
+                "participants": (
+                    [_output._participant_json(p) for p in participants]
+                    if kind == "direct"
+                    else None
+                ),
                 "archived": archived,
                 "filtered": filtered,
                 "message_count": int(row.get("message_count") or 0),
