@@ -55,7 +55,20 @@ class Scope:
         params: list[Any] = []
         if self.handle_ids:
             placeholders = ", ".join("?" for _ in self.handle_ids)
-            clauses.append(f"{alias}.handle_id IN ({placeholders})")
+            # Rows the contact sent carry their handle. Rows the user sent to
+            # them do not when they were synced from another device (Messages
+            # in iCloud stores those with handle_id = 0), so the user's side
+            # of the conversation is found through the 1:1 chats (style 45)
+            # whose participant is one of these handles. Group chats are left
+            # out: a group is not a conversation *with* the contact.
+            clauses.append(
+                f"({alias}.handle_id IN ({placeholders}) OR {alias}.ROWID IN ("
+                "SELECT cmj.message_id FROM chat_message_join cmj "
+                "JOIN chat_handle_join chj ON chj.chat_id = cmj.chat_id "
+                "JOIN chat c ON c.ROWID = cmj.chat_id "
+                f"WHERE c.style = 45 AND chj.handle_id IN ({placeholders})))"
+            )
+            params.extend(self.handle_ids)
             params.extend(self.handle_ids)
         if self.chat_row_id is not None:
             clauses.append(

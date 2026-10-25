@@ -309,7 +309,7 @@ this.
 | `tool_fuzzy_search_messages`       | Search message bodies across all history through a local full-text index, then fuzzy-rank; scope by contact or chat | Read-only                       |
 | `tool_list_conversations`          | List every conversation with kind, message count, unread count, and last activity                                   | Read-only                       |
 | `tool_wait_for_new_messages`       | Block until a message newer than a ROWID cursor arrives, or the timeout expires                                     | Read-only                       |
-| `tool_get_conversation`            | Read one conversation oldest-first with sender names, quoted replies, and tapbacks; page by ROWID in either direction | Read-only                       |
+| `tool_get_conversation`            | Read one conversation oldest-first with sender names, quoted replies, and tapbacks; page older or newer by message cursor (ordered by date, so a chat.db synced from iCloud reads correctly) | Read-only                       |
 | `tool_find_contact`                | Fuzzy-match a name in Contacts and return phone numbers                                                             | Read-only                       |
 | `tool_get_chats`                   | List every group chat and its identifier; unnamed groups appear as `(unnamed: participants)`                        | Read-only                       |
 | `tool_get_chat_participants`       | List who is in a chat, by name and number                                                                           | Read-only                       |

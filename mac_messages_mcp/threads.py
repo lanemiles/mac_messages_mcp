@@ -1,5 +1,12 @@
 # Copyright (c) 2023 Carter Lasalle
-"""Thread-first reading: one conversation, in order, paged by ROWID cursors."""
+"""Thread-first reading: one conversation, in order, paged by message cursors.
+
+Pages are ordered by ``message.date`` (ROWID breaks ties), never by ROWID
+alone: on a Mac whose history came down from Messages in iCloud, ROWID is the
+order rows were *downloaded*, so a 2018 text can outrank yesterday's. The
+cursors are still message ROWIDs (the ``#N`` on each line); the server looks
+up that row's date and pages relative to it.
+"""
 
 from __future__ import annotations
 
@@ -60,12 +67,30 @@ def get_conversation(
 
     clauses = ["cmj.chat_id = ?"]
     params: list[Any] = [chat_row_id]
-    if before_rowid is not None:
-        clauses.append("m.ROWID < ?")
-        params.append(before_rowid)
-    if after_rowid is not None:
-        clauses.append("m.ROWID > ?")
-        params.append(after_rowid)
+    cursor = before_rowid if before_rowid is not None else after_rowid
+    if cursor is not None:
+        anchor = _db.query_messages_db(
+            "SELECT date, ROWID FROM message WHERE ROWID = ?", (cursor,)
+        )
+        if anchor and "error" in anchor[0]:
+            if as_json:
+                return _output._json_dumps(
+                    {"error": _output._json_text(anchor[0]["error"])}
+                )
+            return f"Error accessing messages: {anchor[0]['error']}"
+        if not anchor:
+            return (
+                f"Error: no message with ROWID {cursor}; cursors come from a "
+                "previous page of this conversation."
+            )
+        # Chronological position of the anchor row: its date, then ROWID so
+        # two rows with the same timestamp still have a fixed order.
+        comparison = "<" if before_rowid is not None else ">"
+        clauses.append(
+            f"(m.date {comparison} ? OR (m.date = ? AND m.ROWID {comparison} ?))"
+        )
+        anchor_date = anchor[0].get("date")
+        params.extend([anchor_date, anchor_date, cursor])
     # Forward paging reads ascending; the default and backward paging read the
     # newest rows descending and are flipped into chronological order below.
     order = "ASC" if after_rowid is not None else "DESC"
@@ -77,7 +102,7 @@ def get_conversation(
     FROM message m
     JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
     WHERE {" AND ".join(clauses)}
-    ORDER BY m.ROWID {order}
+    ORDER BY m.date {order}, m.ROWID {order}
     LIMIT ?
     """
     rows = _db.query_messages_db(query, tuple(params))
@@ -101,8 +126,10 @@ def get_conversation(
         chat_display_name=chat.get("display_name"),
         chat_is_group=is_group,
     )
-    oldest = min(ids) if ids else None
-    newest = max(ids) if ids else None
+    # ``rows`` is chronological here, so the boundary cursors are the first
+    # and last rows shown — not min/max ROWID, which need not be chronological.
+    oldest = ids[0] if ids else None
+    newest = ids[-1] if ids else None
     # Older pages exist below the oldest row shown unless this page reached
     # the start; newer pages exist above the newest row when paging back.
     has_older = has_more if order == "DESC" else (before_rowid is not None or bool(ids))

@@ -40,7 +40,12 @@ def test_scope_builds_the_filter_sql_once_for_everyone(chat_db):
     group = chat_db.add_chat("chat1", style=43, display_name="Family", handles=(alice,))
     by_handle = _resolve_message_scope(ALICE, None)
     clauses, params = by_handle.sql_clauses()
-    assert clauses == ["m.handle_id IN (?)"] and params == [alice]
+    # One clause: the contact's handle, OR a message in a 1:1 chat with that
+    # handle (the user's own synced replies carry handle_id = 0).
+    assert len(clauses) == 1
+    assert clauses[0].startswith("(m.handle_id IN (?) OR m.ROWID IN (")
+    assert "c.style = 45" in clauses[0] and "chj.handle_id IN (?)" in clauses[0]
+    assert params == [alice, alice]
 
     by_chat = _resolve_message_scope(None, "chat1")
     clauses, params = by_chat.sql_clauses()

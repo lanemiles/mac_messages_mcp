@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `tool_get_conversation` pages by message date instead of ROWID. On a Mac whose
+  history was downloaded by Messages in iCloud, `message.ROWID` is the download
+  order (a 2018 text can sit above yesterday's), so the "newest page" could be
+  years old and paging skipped around. The `before_rowid` / `after_rowid`
+  cursors still name a boundary message; the next page is everything older or
+  newer than that message's date (ROWID only breaks ties), and a cursor that
+  names no message is an error instead of an empty page.
+- The `contact` filter on `tool_get_recent_messages`, `tool_fuzzy_search_messages`
+  and `tool_wait_for_new_messages` now includes the user's own side of the
+  conversation. Messages the user sent from another device are synced with
+  `handle_id = 0`, so matching only `handle_id` returned the contact's lines
+  and none of the user's; the scope now also matches any message in a 1:1 chat
+  whose participant is that contact. Group chats are still matched only by the
+  contact's own lines.
+
 ### Added
 - Added an agent skill (`.claude/skills/mac-messages/SKILL.md`) that documents when and how to call each MCP tool, plus a README section on installing it for another project or agent.
 - Added schema-faithful test databases: `tests/fixtures/chat_schema.sql` and

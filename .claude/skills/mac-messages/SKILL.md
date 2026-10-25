@@ -115,7 +115,11 @@ activity. Use it to find a thread ID or to triage unread work; use
 `tool_get_conversation(chat_id, limit=50, before_rowid=None, after_rowid=None, format="text")`
 reads one thread in chronological order: with no cursor, the newest page
 oldest-first, headed by the chat's name, kind and participants, and ending with
-the ROWIDs to pass as `before_rowid` (older) or `after_rowid` (newer). Prefer it
+the ROWIDs to pass as `before_rowid` (older) or `after_rowid` (newer). Pages
+follow message dates, not ROWID order — the cursor names a boundary message
+and the next page is everything older or newer than it by date — because on
+a Mac whose history came down from Messages in iCloud, ROWIDs are download
+order and can be years out of sequence. An unknown cursor is an error. Prefer it
 over `tool_get_recent_messages(chat_id=...)` when the user wants to catch up on
 one conversation. Messages that @-mention the user carry `[mentions you]`
 (JSON `mentions_me`), and `tool_list_conversations` flags such threads
